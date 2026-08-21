@@ -1,5 +1,6 @@
 import { annotateMorseValue, decodeMorse, isMorseCharacter } from "../morse";
 import { HAM_CW_TERMS, isHamCwScoringTerm } from "../hamVocabulary";
+import { hamMessageEvidence } from "../hamInterpreter";
 
 export interface OfflineDecodeOptions {
   wpmHint: number;
@@ -33,6 +34,7 @@ export interface OfflineDecodeCandidate {
   timingQuality: number;
   languageQuality: number;
   messageQuality: number;
+  hamEvidence: number;
   decoderScore: number;
   /** Literal decoder copy used for hypothesis scoring, before display aliases. */
   transcript: string;
@@ -50,6 +52,8 @@ export interface OfflineDecodeResult {
   wpm: number;
   thresholdDb: number;
   score: number;
+  /** Sequence-aware CW shorthand contribution used only for bounded ranking. */
+  hamEvidence: number;
   confidence: number;
   converged: boolean;
   passCount: number;
@@ -105,12 +109,29 @@ interface DecodeHypothesis {
   validRatio: number;
   languageQuality: number;
   messageQuality: number;
+  hamEvidence: number;
+  baseScore: number;
   decoderScore: number;
   contrastDb: number;
 }
 
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
+
+const HAM_EVIDENCE_RANKING_WEIGHT = 0.25;
+
+function hamRankingBonus(
+  evidence: number,
+  decoderScore: number,
+  validRatio: number,
+  timingQuality: number,
+) {
+  if (decoderScore < 0.62 || validRatio < 0.9 || timingQuality < 0.55) return 0;
+  // The interpreter exposes up to 0.10 evidence; only a quarter of that may
+  // affect ranking. It can break a genuinely close physical tie, never erase
+  // a meaningful timing/signal lead.
+  return evidence * HAM_EVIDENCE_RANKING_WEIGHT;
+}
 
 const median = (values: number[]) => {
   if (values.length === 0) return 0;
@@ -559,10 +580,23 @@ function consensusHypothesis(variants: DecodeHypothesis[], languageAssist: boole
     }
     tokens.push(...selectedWords[index]);
   }
+  const transcript = tokens.map((token) => token.value).join("");
+  const hamEvidence = hamMessageEvidence(transcript).score;
   return {
     ...best,
     tokens,
-    transcript: tokens.map((token) => token.value).join(""),
+    transcript,
+    hamEvidence,
+    score: clamp(
+      best.baseScore + hamRankingBonus(
+        hamEvidence,
+        best.decoderScore,
+        best.validRatio,
+        best.timingQuality,
+      ),
+      -2,
+      1.2,
+    ),
   };
 }
 
@@ -688,7 +722,20 @@ function optimizeEnvelope(
   let best: DecodeHypothesis | null = null;
   const unique = new Map<string, DecodeHypothesis>();
   let passCount = 0;
-  const thresholdFractions = [0.4, 0.46, 0.52, 0.58, 0.64];
+  const standardThresholdProfiles = [
+    { fraction: 0.4, recoveryPenalty: 0 },
+    { fraction: 0.46, recoveryPenalty: 0 },
+    { fraction: 0.52, recoveryPenalty: 0 },
+    { fraction: 0.58, recoveryPenalty: 0 },
+    { fraction: 0.64, recoveryPenalty: 0 },
+  ];
+  const recoveryThresholdProfiles = [
+    // High gates can reject chatter and expose marks hidden by a low-level
+    // keyed residue. Treat them as recovery passes: they may rescue a failed
+    // ordinary sweep, but need a meaningful quality lead to displace one.
+    { fraction: 0.72, recoveryPenalty: 0.05 },
+    { fraction: 0.8, recoveryPenalty: 0.06 },
+  ];
   const hysteresisValues = [1, 1.5, 2];
   const debounceValues = [4, 6, 10];
   const characterBoundaries = [1.75, 2.05, 2.4];
@@ -699,45 +746,64 @@ function optimizeEnvelope(
     ? [3.4, 3.8, 4.4, 5.2, 6.2, 7.4]
     : [5.8, 6.8, 7.8];
 
-  for (const thresholdFraction of thresholdFractions) {
-    const thresholdDb = envelope.lowDb + contrastDb * thresholdFraction;
-    for (const hysteresisDb of hysteresisValues) {
-      for (const debounceMs of debounceValues) {
-        const runs = buildRuns(envelope, thresholdDb, hysteresisDb, debounceMs);
-        const fitted = fitUnit(runs, options.wpmHint);
-        if (fitted.marks < 3) continue;
-        for (const characterUnits of characterBoundaries) {
-          for (const wordUnits of wordBoundaries) {
-            passCount += 1;
-            const decoded = decodeRuns(
-              runs,
-              fitted.unitMs,
-              characterUnits,
-              wordUnits,
-              options.languageAssist,
-            );
-            const nextLanguageQuality = options.languageAssist ? languageQuality(decoded.transcript) : 0.5;
-            const speedQuality = Math.exp(-0.5 * (
-              Math.log((1200 / fitted.unitMs) / clamp(options.wpmHint, 5, 60)) / Math.log(1.5)
-            ) ** 2);
-            const contrastQuality = clamp((contrastDb - 7) / 25, 0, 1);
-            const densityQuality = clamp(decoded.tokens.filter((token) => !token.space).length / 4, 0, 1);
-            const replacementCount = decoded.tokens.filter((token) => token.value === "�").length;
-            const decoderScore = (0.35 * fitted.timingQuality +
-              0.25 * nextLanguageQuality +
-              0.2 * speedQuality +
-              0.14 * decoded.validRatio +
-              0.04 * contrastQuality +
-              0.02 * densityQuality) * densityQuality - replacementCount * 0.08;
-            const messageQuality = options.languageAssist
-              ? messageEvidenceQuality(decoded.transcript, decoded.tokens, nextLanguageQuality)
-              : 0;
-            // Decoder quality says whether a track is Morse-like; message
-            // evidence says whether there is enough coherent content to trust
-            // it over a simultaneous, shorter station. Keep the two values
-            // separate so weak/noisy prose cannot bypass the signal guardrail.
-            const score = clamp(decoderScore + messageQuality * 0.2, -2, 1.2);
-            const hypothesis: DecodeHypothesis = {
+  const evaluateThresholdProfiles = (profiles: typeof standardThresholdProfiles) => {
+    for (const { fraction: thresholdFraction, recoveryPenalty } of profiles) {
+      const thresholdDb = envelope.lowDb + contrastDb * thresholdFraction;
+      for (const hysteresisDb of hysteresisValues) {
+        for (const debounceMs of debounceValues) {
+          const runs = buildRuns(envelope, thresholdDb, hysteresisDb, debounceMs);
+          const fitted = fitUnit(runs, options.wpmHint);
+          if (fitted.marks < 3) continue;
+          for (const characterUnits of characterBoundaries) {
+            for (const wordUnits of wordBoundaries) {
+              passCount += 1;
+              const decoded = decodeRuns(
+                runs,
+                fitted.unitMs,
+                characterUnits,
+                wordUnits,
+                options.languageAssist,
+              );
+              const nextLanguageQuality = options.languageAssist ? languageQuality(decoded.transcript) : 0.5;
+              const speedQuality = Math.exp(-0.5 * (
+                Math.log((1200 / fitted.unitMs) / clamp(options.wpmHint, 5, 60)) / Math.log(1.5)
+              ) ** 2);
+              const contrastQuality = clamp((contrastDb - 7) / 25, 0, 1);
+              const densityQuality = clamp(decoded.tokens.filter((token) => !token.space).length / 4, 0, 1);
+              const replacementCount = decoded.tokens.filter((token) => token.value === "�").length;
+              const decoderScore = (0.35 * fitted.timingQuality +
+                0.25 * nextLanguageQuality +
+                0.2 * speedQuality +
+                0.14 * decoded.validRatio +
+                0.04 * contrastQuality +
+                0.02 * densityQuality) * densityQuality - replacementCount * 0.08;
+              const messageQuality = options.languageAssist
+                ? messageEvidenceQuality(decoded.transcript, decoded.tokens, nextLanguageQuality)
+                : 0;
+              const hamEvidence = options.languageAssist
+                ? hamMessageEvidence(decoded.transcript).score
+                : 0;
+              // Decoder quality says whether a track is Morse-like; message
+              // evidence says whether there is enough coherent content to trust
+              // it over a simultaneous, shorter station. Sequence-aware ham
+              // shorthand is a final capped tie-breaker. Keep the pre-context
+              // score separate so lexical evidence cannot declare convergence.
+              const baseScore = clamp(
+                decoderScore + messageQuality * 0.2 - recoveryPenalty,
+                -2,
+                1.2,
+              );
+              const score = clamp(
+                baseScore + hamRankingBonus(
+                  hamEvidence,
+                  decoderScore,
+                  decoded.validRatio,
+                  fitted.timingQuality,
+                ),
+                -2,
+                1.2,
+              );
+              const hypothesis: DecodeHypothesis = {
                 ...decoded,
                 score,
                 thresholdDb,
@@ -751,16 +817,26 @@ function optimizeEnvelope(
                 timingQuality: fitted.timingQuality,
                 languageQuality: nextLanguageQuality,
                 messageQuality,
+                hamEvidence,
+                baseScore,
                 decoderScore,
                 contrastDb,
               };
-            if (!best || score > best.score) best = hypothesis;
-            const previous = unique.get(decoded.transcript);
-            if (!previous || score > previous.score) unique.set(decoded.transcript, hypothesis);
+              if (!best || score > best.score) best = hypothesis;
+              const previous = unique.get(decoded.transcript);
+              if (!previous || score > previous.score) unique.set(decoded.transcript, hypothesis);
+            }
           }
         }
       }
     }
+  };
+
+  evaluateThresholdProfiles(standardThresholdProfiles);
+  const standardBaseScore = best ? (best as DecodeHypothesis).baseScore : -Infinity;
+  const standardValidRatio = best ? (best as DecodeHypothesis).validRatio : 0;
+  if (standardBaseScore < 0.84 || standardValidRatio < 0.96) {
+    evaluateThresholdProfiles(recoveryThresholdProfiles);
   }
   const alternatives = [...unique.values()].sort((left, right) => right.score - left.score).slice(0, 12);
   return {
@@ -855,6 +931,7 @@ export function optimizeMorseRecording(
       timingQuality: hypothesis.timingQuality,
       languageQuality: hypothesis.languageQuality,
       messageQuality: hypothesis.messageQuality,
+      hamEvidence: hypothesis.hamEvidence,
       decoderScore: hypothesis.decoderScore,
       transcript: hypothesis.transcript,
       thresholdDb: hypothesis.thresholdDb,
@@ -869,20 +946,29 @@ export function optimizeMorseRecording(
     timingQuality: hypothesis.timingQuality,
     languageQuality: hypothesis.languageQuality,
     messageQuality: hypothesis.messageQuality,
+    hamEvidence: hypothesis.hamEvidence,
     decoderScore: hypothesis.decoderScore,
     transcript: hypothesis.transcript,
     thresholdDb: hypothesis.thresholdDb,
   }));
-  const runnerUp = alternatives[1]?.score ?? 0;
-  const absoluteQuality = clamp((winner.hypothesis.score - 0.55) / 0.35, 0, 1);
-  const marginQuality = clamp((winner.hypothesis.score - runnerUp) / 0.18, 0, 1);
+  const physicalPeers = [...finalResults, ...previewResults]
+    .filter((item, index, values) => values.findIndex((other) =>
+      other.candidate.channel === item.candidate.channel &&
+      Math.abs(other.candidate.frequency - item.candidate.frequency) < 5,
+    ) === index)
+    .filter((item) => item.candidate.channel !== winner.candidate.channel ||
+      Math.abs(item.candidate.frequency - winner.candidate.frequency) >= 5)
+    .sort((left, right) => right.hypothesis.baseScore - left.hypothesis.baseScore);
+  const physicalRunnerUp = physicalPeers[0]?.hypothesis.baseScore ?? 0;
+  const absoluteQuality = clamp((winner.hypothesis.baseScore - 0.55) / 0.35, 0, 1);
+  const marginQuality = clamp((winner.hypothesis.baseScore - physicalRunnerUp) / 0.18, 0, 1);
   const confidence = clamp(0.25 + 0.74 * (absoluteQuality * 0.7 + marginQuality * 0.3), 0.25, 0.99);
   // The legacy streaming decoder remains the safer choice for recordings that
   // do not produce a strong, valid consensus (wideband voice/noise, multiple
   // overlapping bands, or extremely degraded historical audio). File search is
   // an enhancement, not permission to replace a better live result with a weak
   // offline guess.
-  const converged = winner.hypothesis.score >= 0.75 &&
+  const converged = winner.hypothesis.baseScore >= 0.75 &&
     winner.hypothesis.decoderScore >= 0.7 &&
     winner.hypothesis.validRatio >= 0.96 && confidence >= 0.78;
   const rawTranscript = winner.hypothesis.transcript;
@@ -902,6 +988,7 @@ export function optimizeMorseRecording(
     wpm: winner.hypothesis.wpm,
     thresholdDb: winner.hypothesis.thresholdDb,
     score: winner.hypothesis.score,
+    hamEvidence: winner.hypothesis.hamEvidence,
     confidence,
     converged,
     passCount,

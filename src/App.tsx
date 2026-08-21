@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { AudioEngine, type AnalysisFrame, type AudioSourceKind } from "./audio/AudioEngine";
 import type { DecodedCharacter } from "./audio/AdaptiveMorseDecoder";
+import { interpretHamCopy, type HamMarker } from "./audio/hamInterpreter";
 import type { OfflineDecodeProgress, OfflineDecodeResult } from "./audio/OfflineMorseOptimizer";
 import { Panel, RangeControl, Toggle } from "./components/Controls";
 import { SignalScope } from "./components/SignalScope";
@@ -188,7 +189,12 @@ export default function App() {
 
   useEffect(() => {
     const element = transcriptRef.current;
-    if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+    if (!element) return;
+    const rawCopy = element.querySelector<HTMLElement>(":scope > p[role='log']");
+    const top = rawCopy
+      ? Math.max(0, rawCopy.offsetTop + rawCopy.offsetHeight - element.clientHeight + 16)
+      : element.scrollHeight;
+    element.scrollTo({ top, behavior: "smooth" });
   }, [tokens.length]);
 
   useEffect(() => {
@@ -255,6 +261,7 @@ export default function App() {
         maximumFrequency: 4000,
       }, setOfflineProgress);
       setSourceDuration(metadata?.duration ?? null);
+      if (metadata?.optimization) setOfflineResult(metadata.optimization);
       if (metadata?.optimization?.converged) {
         const optimizedTokens = metadata.optimization.tokens.map((token) => ({
           ...token,
@@ -262,7 +269,6 @@ export default function App() {
         }));
         setTokens(optimizedTokens);
         setLastCharacter([...optimizedTokens].reverse().find((token) => !token.space) ?? null);
-        setOfflineResult(metadata.optimization);
         setOfflineProgress(null);
       } else if (metadata?.optimization) {
         setOfflineProgress(null);
@@ -301,6 +307,23 @@ export default function App() {
   }, []);
 
   const transcript = useMemo(() => tokens.map((token) => token.value).join("").trim(), [tokens]);
+  const hamInterpretation = useMemo(
+    () => settings.languageAssist && transcript ? interpretHamCopy(transcript) : null,
+    [settings.languageAssist, transcript],
+  );
+  const hamMarkers = useMemo(() => {
+    const unique = new Map<string, HamMarker>();
+    for (const marker of hamInterpretation?.markers ?? []) {
+      unique.set(`${marker.token}:${marker.expansion}`, marker);
+    }
+    return [...unique.values()];
+  }, [hamInterpretation]);
+  const offlineCandidateInterpretation = useMemo(() => {
+    if (!settings.languageAssist || !offlineResult || offlineResult.converged || offlineResult.hamEvidence <= 0) {
+      return null;
+    }
+    return interpretHamCopy(offlineResult.transcript);
+  }, [offlineResult, settings.languageAssist]);
   const characters = useMemo(() => tokens.filter((token) => !token.space), [tokens]);
   const recentCharacters = useMemo(() => characters.slice(-5).reverse(), [characters]);
   const averageConfidence = useMemo(() => {
@@ -363,10 +386,11 @@ export default function App() {
     if (file) void startFile(file);
   };
 
-  const detectedFrequency = offlineResult?.frequency ?? frame?.frequency ?? settings.frequency;
-  const estimatedWpm = offlineResult?.wpm ?? frame?.metrics.wpm ?? settings.wpmHint;
+  const trustedOfflineResult = offlineResult?.converged ? offlineResult : null;
+  const detectedFrequency = trustedOfflineResult?.frequency ?? frame?.frequency ?? settings.frequency;
+  const estimatedWpm = trustedOfflineResult?.wpm ?? frame?.metrics.wpm ?? settings.wpmHint;
   const signalSnr = frame?.metrics.snrDb ?? 0;
-  const signalLocked = Boolean(offlineResult || active && frame && frame.prominenceDb >= 5);
+  const signalLocked = Boolean(trustedOfflineResult || active && frame && frame.prominenceDb >= 5);
   const timingJitter = frame?.metrics.timingJitter ?? 0;
   const recoveredEdges = frame?.metrics.recoveredEdges ?? 0;
 
@@ -461,7 +485,7 @@ export default function App() {
         <div className="primary-grid">
           <Panel
             eyebrow="Decode buffer"
-            title="Recovered copy"
+            title="Raw on-air copy"
             className="transcript-panel"
             action={
               <div className="panel-tools">
@@ -471,22 +495,50 @@ export default function App() {
               </div>
             }
           >
-            <div ref={transcriptRef} className={`transcript ${tokens.length ? "has-copy" : ""}`} aria-live="polite" aria-label="Decoded Morse transcript">
+            <div ref={transcriptRef} className={`transcript ${tokens.length ? "has-copy" : ""}`} aria-label="Decoded Morse transcript">
               {tokens.length ? (
-                <p>
-                  {tokens.map((token) => token.space ? (
-                    <span key={token.id}> </span>
-                  ) : (
-                    <span
-                      key={token.id}
-                      className={token.confidence < 0.55 ? "low-confidence" : ""}
-                      title={`${token.pattern}${token.rawValue ? ` · raw ${token.rawValue}` : ""} · ${Math.round(token.confidence * 100)}% confidence`}
-                    >
-                      {token.value}
-                    </span>
-                  ))}
-                  {active && <span className="decode-cursor" aria-hidden="true" />}
-                </p>
+                <>
+                  <p
+                    role="log"
+                    aria-live="polite"
+                    aria-atomic="false"
+                    aria-relevant="additions text"
+                    aria-label="Raw recovered ham copy"
+                  >
+                    {tokens.map((token) => token.space ? (
+                      <span key={token.id}> </span>
+                    ) : (
+                      <span
+                        key={token.id}
+                        className={token.confidence < 0.55 ? "low-confidence" : ""}
+                        title={`${token.pattern}${token.rawValue ? ` · raw ${token.rawValue}` : ""} · ${Math.round(token.confidence * 100)}% confidence`}
+                      >
+                        {token.value}
+                      </span>
+                    ))}
+                    {active && <span className="decode-cursor" aria-hidden="true" />}
+                  </p>
+                  {hamInterpretation && hamMarkers.length > 0 && (
+                    <section className="copy-advisory" aria-labelledby="copy-advisory-title">
+                      <div className="copy-advisory-heading">
+                        <span id="copy-advisory-title">HAM SEMANTIC LAYER</span>
+                        <small>OPERATOR AID · NON-AUTHORITATIVE</small>
+                      </div>
+                      <ul className="marker-strip" aria-label="Recognized CW operating markers">
+                        {hamMarkers.map((marker) => (
+                          <li className="marker-chip" key={`${marker.token}:${marker.expansion}`}>
+                            <code>{marker.token}</code>
+                            <span>{marker.expansion}</span>
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="advisory-expansion">
+                        <span>ADVISORY EXPANSION</span>
+                        <span>{hamInterpretation.expandedText}</span>
+                      </p>
+                    </section>
+                  )}
+                </>
               ) : (
                 <div className="empty-transcript">
                   <div className="empty-icon"><Radio size={25} /></div>
@@ -498,6 +550,23 @@ export default function App() {
                   {!active && <button onClick={() => void startDemo()}><Play size={14} fill="currentColor" /> Inject reference</button>}
                 </div>
               )}
+              {offlineCandidateInterpretation && offlineResult && (
+                <section className="multipass-candidate" aria-labelledby="multipass-candidate-title">
+                  <div className="multipass-candidate-heading">
+                    <span id="multipass-candidate-title">UNSELECTED MULTIPASS CANDIDATE</span>
+                    <small>
+                      {Math.round(offlineResult.frequency)} HZ · {offlineResult.wpm.toFixed(1)} WPM ·
+                      {` CONTEXT ${(offlineResult.hamEvidence * 100).toFixed(1)} / 10`}
+                    </small>
+                  </div>
+                  <p>{offlineResult.transcript}</p>
+                  <div className="candidate-reading">
+                    <span>CONTEXT READ</span>
+                    <span>{offlineCandidateInterpretation.expandedText}</span>
+                  </div>
+                  <em>Held out because the physical timing/validity convergence gate did not pass.</em>
+                </section>
+              )}
             </div>
             <div className="copy-footer">
               <span>{characters.length} characters</span>
@@ -505,7 +574,7 @@ export default function App() {
               <span>{wordCount} words</span>
               <i />
               <span>{formatDuration(elapsed)} elapsed</span>
-              {offlineResult && <span className="optimizer-summary">MULTIPASS · {offlineResult.passCount.toLocaleString()} hypotheses · {Math.round(offlineResult.frequency)} Hz · {Math.round(offlineResult.confidence * 100)}%</span>}
+              {offlineResult && <span className="optimizer-summary">MULTIPASS {offlineResult.converged ? "LOCK" : "CANDIDATE"} · {offlineResult.passCount.toLocaleString()} hypotheses · {Math.round(offlineResult.frequency)} Hz · {Math.round(offlineResult.confidence * 100)}%</span>}
               <span className="copy-quality"><Check size={13} /> Confidence shading is visible on uncertain copy</span>
             </div>
           </Panel>
@@ -514,7 +583,7 @@ export default function App() {
             eyebrow="IF analysis"
             title="Narrow-band spectrum"
             className="scope-panel"
-            action={<span className={`lock-badge ${signalLocked ? "is-locked" : ""}`}><i /> {offlineResult ? `Track ${offlineResult.channel + 1} selected` : signalLocked ? "Tone locked" : "Seeking"}</span>}
+            action={<span className={`lock-badge ${signalLocked ? "is-locked" : ""}`}><i /> {trustedOfflineResult ? `Track ${trustedOfflineResult.channel + 1} selected` : signalLocked ? "Tone locked" : "Seeking"}</span>}
           >
             <SignalScope frame={frame} active={active} />
             <div className="scope-readout">
@@ -535,7 +604,7 @@ export default function App() {
           <div className="metric-card">
             <span className="metric-icon amber"><Zap size={16} /></span>
             <div><span>Estimated speed</span><strong>{estimatedWpm.toFixed(1)}<small> WPM</small></strong></div>
-            <em>{offlineResult ? "Consensus" : settings.adaptiveSpeed ? "Tracking" : "Fixed"}</em>
+            <em>{trustedOfflineResult ? "Consensus" : settings.adaptiveSpeed ? "Tracking" : "Fixed"}</em>
           </div>
           <div className="metric-card">
             <span className="metric-icon violet"><Radio size={16} /></span>

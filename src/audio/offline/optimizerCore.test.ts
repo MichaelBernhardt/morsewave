@@ -68,6 +68,29 @@ describe("offline multipass optimizer", () => {
     ]);
   }, 10_000);
 
+  it("uses coherent ham procedure only as bounded multipass evidence", () => {
+    const sampleRate = 12_000;
+    const samples = renderKeyedTone(
+      "CQ CQ DE W1AW UR RST 5NN 5NN OP IS ED QTH",
+      20,
+      700,
+      0.42,
+      sampleRate,
+    );
+    const result = optimizeMorseRecording([samples], sampleRate, {
+      wpmHint: 20,
+      languageAssist: true,
+      minimumFrequency: 650,
+      maximumFrequency: 750,
+    });
+
+    expect(result.rawTranscript).toBe("CQ CQ DE W1AW UR RST 5NN 5NN OP IS ED QTH");
+    expect(result.hamEvidence).toBeGreaterThanOrEqual(0.08);
+    expect(result.hamEvidence).toBeLessThanOrEqual(0.1);
+    expect(result.candidates[0].hamEvidence).toBe(result.hamEvidence);
+    expect(result.converged).toBe(true);
+  }, 10_000);
+
   it("selects the intended Morse track instead of a stronger simultaneous station", () => {
     const sampleRate = 12_000;
     const wanted = renderKeyedTone("CALLED TEST", 20, 300, 0.42, sampleRate);

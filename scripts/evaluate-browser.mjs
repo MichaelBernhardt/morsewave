@@ -119,6 +119,8 @@ try {
     status: document.querySelector('.status-chip')?.textContent?.trim() ?? '',
     source: document.querySelector('.source-context')?.textContent?.replace(/\\s+/g, ' ').trim() ?? '',
     transcript: document.querySelector('.transcript p')?.textContent?.trim() ?? '',
+    hamAdvisory: document.querySelector('.copy-advisory')?.textContent?.replace(/\\s+/g, ' ').trim() ?? '',
+    multipassCandidate: document.querySelector('.multipass-candidate')?.textContent?.replace(/\\s+/g, ' ').trim() ?? '',
     metrics: Array.from(document.querySelectorAll('.metric-card')).map((element) =>
       element.textContent?.replace(/\\s+/g, ' ').trim() ?? ''
     ),
