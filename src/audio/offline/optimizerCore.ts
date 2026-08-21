@@ -28,6 +28,10 @@ export interface OfflineDecodeCandidate {
   wpm: number;
   contrastDb: number;
   validRatio: number;
+  timingQuality: number;
+  languageQuality: number;
+  messageQuality: number;
+  decoderScore: number;
   transcript: string;
   thresholdDb?: number;
 }
@@ -94,6 +98,8 @@ interface DecodeHypothesis {
   timingQuality: number;
   validRatio: number;
   languageQuality: number;
+  messageQuality: number;
+  decoderScore: number;
   contrastDb: number;
 }
 
@@ -114,7 +120,7 @@ const COMMON_BIGRAMS = new Set(
 );
 
 const COMMON_WORDS = new Set(
-  "A I THE AND OF TO IN IS IT THIS THAT FOR FROM WITH ON AT BY AS BE OR ARE WAS WERE YOU YOUR MY ME WE OUR THEY HE SHE NAME CALL CALLED CALLING RADIO CW MORSE CODE SIGNAL COPY AGAIN PLEASE PSE THANKS TNX GOOD GREAT BAD FIST TEST NOW WPM TRANSITION FILE FOLLOWS WEATHER ANTENNA POWER RIG STATION OPERATOR MORNING AFTERNOON EVENING YESTERDAY SOUNDED HAPPY VERY HELLO HI ES VY ESVY IM GL CQ DE QRZ QSO QTH RST K KN AR SK R".split(" "),
+  "A I THE AND OF TO IN IS IT THIS THAT FOR FROM WITH ON AT BY AS BE OR ARE WAS WERE YOU YOUR MY ME WE OUR THEY HE SHE NAME CALL CALLED CALLING RADIO CW MORSE CODE SIGNAL COPY AGAIN PLEASE PSE THANKS TNX GOOD GREAT BAD FIST TEST NOW WPM TRANSITION FILE FOLLOWS WEATHER ANTENNA POWER RIG STATION OPERATOR MORNING AFTERNOON EVENING YESTERDAY SOUNDED HAPPY VERY HELLO HI ABOUT AFTER ALL ALSO BACK BEEN BEFORE BEST BOTH BUT CAN COME DAY DID DO DOWN EACH FIRST FUN GET GIVE GO HAD HAS HAVE HERE HOW INTO JUST KNOW LIKE LITTLE LOCAL LONG LOOK MADE MAKE MORE MOST MUCH NEW NO NOT ONLY OTHER OUT OVER PEOPLE RIGHT SAID SEE SOME SUM TAKE THAN THEM THEN THERE THESE TIME TWO UP USE VIDEO WAY WELL WHAT WHEN WHERE WHICH WHO WILL WORK WOULD YES ES VY ESVY IM GL CQ DE QRZ QSO QTH RST CLUB K KN AR SK R".split(" "),
 );
 
 function makeHann(size: number) {
@@ -390,16 +396,20 @@ function fitUnit(runs: GateRun[], hintWpm: number) {
 }
 
 function languageQuality(transcript: string) {
-  const letters = transcript.replace(/[^A-Z0-9]/g, "");
+  // Score letter pairs inside words only. Removing separators first used to
+  // manufacture plausible pairs across spaces and around digits, which made a
+  // short callsign interferer look more like prose than a complete message.
+  const letterWords = transcript.match(/[A-Z]+/g) ?? [];
   let bigrams = 0;
   let acceptedBigrams = 0;
-  for (let index = 1; index < letters.length; index += 1) {
-    const pair = letters.slice(index - 1, index + 1);
-    if (/\d/.test(pair)) continue;
-    bigrams += 1;
-    if (COMMON_BIGRAMS.has(pair)) acceptedBigrams += 1;
+  for (const letters of letterWords) {
+    for (let index = 1; index < letters.length; index += 1) {
+      const pair = letters.slice(index - 1, index + 1);
+      bigrams += 1;
+      if (COMMON_BIGRAMS.has(pair)) acceptedBigrams += 1;
+    }
   }
-  const words = transcript.split(/\s+/).filter(Boolean);
+  const words = transcript.match(/[A-Z0-9]+(?:\/[A-Z0-9]+)?/g) ?? [];
   let wordPoints = 0;
   let implausibleDigits = 0;
   for (const word of words) {
@@ -413,6 +423,35 @@ function languageQuality(transcript: string) {
   const bigramRatio = bigrams ? acceptedBigrams / bigrams : 0;
   const wordRatio = words.length ? wordPoints / words.length : 0;
   return clamp(bigramRatio * 0.68 + wordRatio * 0.32 - implausibleDigits * 0.09, 0, 1);
+}
+
+function messageEvidenceQuality(
+  transcript: string,
+  tokens: OfflineDecodeToken[],
+  nextLanguageQuality: number,
+) {
+  const words = transcript.match(/[A-Z0-9]+(?:\/[A-Z0-9]+)?/g) ?? [];
+  const characterCount = tokens.filter((token) => !token.space && token.value !== "�").length;
+  if (!characterCount || !words.length) return 0;
+
+  let shapedCharacters = 0;
+  let totalCharacters = 0;
+  for (const word of words) {
+    totalCharacters += word.length;
+    if (/^[A-Z]{2,}$/.test(word)) shapedCharacters += word.length;
+    else if (COMMON_WORDS.has(word)) shapedCharacters += word.length * 0.9;
+    else if (/^[A-Z]{1,2}\d[A-Z0-9]{1,5}(?:\/[A-Z0-9]+)?$/.test(word)) {
+      // Callsigns remain first-class Morse content, but language assist should
+      // prefer a sustained readable message when two stations overlap.
+      shapedCharacters += word.length * 0.45;
+    } else if (/^\d+$/.test(word)) shapedCharacters += word.length * 0.4;
+    else shapedCharacters += word.length * 0.12;
+  }
+
+  const amount = 1 - Math.exp(-characterCount / 20);
+  const shape = shapedCharacters / Math.max(1, totalCharacters);
+  const linguisticSupport = 0.55 + nextLanguageQuality * 0.45;
+  return clamp(amount * shape * linguisticSupport, 0, 1);
 }
 
 function wordTokens(tokens: OfflineDecodeToken[]) {
@@ -440,6 +479,34 @@ function wordPlausibility(word: string) {
     if (COMMON_BIGRAMS.has(word.slice(index - 1, index + 1))) accepted += 1;
   }
   return pairs ? accepted / pairs : 0;
+}
+
+function normalizeTokenSpacing(tokens: OfflineDecodeToken[]) {
+  const normalized: OfflineDecodeToken[] = [];
+  for (const token of tokens) {
+    if (!token.space && /^[,.?!:;]$/.test(token.value) && normalized.at(-1)?.space) {
+      normalized.pop();
+    }
+    normalized.push(token);
+  }
+
+  // A dash preceded by whitespace is punctuation, not an in-word hyphen. If
+  // the sender ran the following word into it, restore only that unambiguous
+  // display boundary while retaining both transmitted dash characters.
+  for (let index = 1; index < normalized.length - 1; index += 1) {
+    if (normalized[index].value !== "-" || !normalized[index - 1].space || normalized[index + 1].space) {
+      continue;
+    }
+    normalized.splice(index + 1, 0, {
+      value: " ",
+      pattern: "/",
+      confidence: 0.7,
+      timestamp: normalized[index].timestamp,
+      space: true,
+    });
+    index += 1;
+  }
+  return normalized;
 }
 
 function consensusHypothesis(variants: DecodeHypothesis[], languageAssist: boolean) {
@@ -585,10 +652,15 @@ function decodeRuns(
   }
   emit(runs.at(-1)?.endMs ?? 0);
   while (tokens.at(-1)?.space) tokens.pop();
-  const transcript = tokens.map((token) => token.value).join("").trim();
-  const characters = tokens.filter((token) => !token.space);
+  const normalizedTokens = normalizeTokenSpacing(tokens);
+  const transcript = normalizedTokens.map((token) => token.value).join("").trim();
+  const characters = normalizedTokens.filter((token) => !token.space);
   const valid = characters.filter((token) => token.value !== "�").length;
-  return { tokens, transcript, validRatio: characters.length ? valid / characters.length : 0 };
+  return {
+    tokens: normalizedTokens,
+    transcript,
+    validRatio: characters.length ? valid / characters.length : 0,
+  };
 }
 
 function optimizeEnvelope(
@@ -603,7 +675,12 @@ function optimizeEnvelope(
   const hysteresisValues = [1, 1.5, 2];
   const debounceValues = [4, 6, 10];
   const characterBoundaries = [1.75, 2.05, 2.4];
-  const wordBoundaries = [5.8, 6.8, 7.8];
+  // Real hand keys often collapse nominal 7-unit word spaces toward ordinary
+  // character spacing. Search the ambiguous 3.5–5.5 unit region as well and
+  // let timing plus language consensus decide instead of hard-wiring 7 units.
+  const wordBoundaries = options.languageAssist
+    ? [3.4, 3.8, 4.4, 5.2, 6.2, 7.4]
+    : [5.8, 6.8, 7.8];
 
   for (const thresholdFraction of thresholdFractions) {
     const thresholdDb = envelope.lowDb + contrastDb * thresholdFraction;
@@ -629,12 +706,20 @@ function optimizeEnvelope(
             const contrastQuality = clamp((contrastDb - 7) / 25, 0, 1);
             const densityQuality = clamp(decoded.tokens.filter((token) => !token.space).length / 4, 0, 1);
             const replacementCount = decoded.tokens.filter((token) => token.value === "�").length;
-            const score = (0.35 * fitted.timingQuality +
+            const decoderScore = (0.35 * fitted.timingQuality +
               0.25 * nextLanguageQuality +
               0.2 * speedQuality +
               0.14 * decoded.validRatio +
               0.04 * contrastQuality +
               0.02 * densityQuality) * densityQuality - replacementCount * 0.08;
+            const messageQuality = options.languageAssist
+              ? messageEvidenceQuality(decoded.transcript, decoded.tokens, nextLanguageQuality)
+              : 0;
+            // Decoder quality says whether a track is Morse-like; message
+            // evidence says whether there is enough coherent content to trust
+            // it over a simultaneous, shorter station. Keep the two values
+            // separate so weak/noisy prose cannot bypass the signal guardrail.
+            const score = clamp(decoderScore + messageQuality * 0.2, -2, 1.2);
             const hypothesis: DecodeHypothesis = {
                 ...decoded,
                 score,
@@ -648,6 +733,8 @@ function optimizeEnvelope(
                 wpm: 1200 / fitted.unitMs,
                 timingQuality: fitted.timingQuality,
                 languageQuality: nextLanguageQuality,
+                messageQuality,
+                decoderScore,
                 contrastDb,
               };
             if (!best || score > best.score) best = hypothesis;
@@ -748,6 +835,10 @@ export function optimizeMorseRecording(
       wpm: hypothesis.wpm,
       contrastDb: hypothesis.contrastDb,
       validRatio: hypothesis.validRatio,
+      timingQuality: hypothesis.timingQuality,
+      languageQuality: hypothesis.languageQuality,
+      messageQuality: hypothesis.messageQuality,
+      decoderScore: hypothesis.decoderScore,
       transcript: hypothesis.transcript,
       thresholdDb: hypothesis.thresholdDb,
     }));
@@ -758,6 +849,10 @@ export function optimizeMorseRecording(
     wpm: hypothesis.wpm,
     contrastDb: hypothesis.contrastDb,
     validRatio: hypothesis.validRatio,
+    timingQuality: hypothesis.timingQuality,
+    languageQuality: hypothesis.languageQuality,
+    messageQuality: hypothesis.messageQuality,
+    decoderScore: hypothesis.decoderScore,
     transcript: hypothesis.transcript,
     thresholdDb: hypothesis.thresholdDb,
   }));
@@ -771,6 +866,7 @@ export function optimizeMorseRecording(
   // an enhancement, not permission to replace a better live result with a weak
   // offline guess.
   const converged = winner.hypothesis.score >= 0.75 &&
+    winner.hypothesis.decoderScore >= 0.7 &&
     winner.hypothesis.validRatio >= 0.96 && confidence >= 0.78;
   onProgress?.({ phase: "complete", fraction: 1, detail: "Selected the strongest Morse hypothesis" });
   return {

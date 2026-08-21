@@ -7,7 +7,7 @@ interface ToneSegment {
   seconds: number;
 }
 
-function keyedSegments(text: string, wpm: number) {
+function keyedSegments(text: string, wpm: number, wordGapUnits = 7) {
   const unit = 1.2 / wpm;
   const segments: ToneSegment[] = [{ keyed: false, seconds: unit * 3 }];
   const words = encodeText(text);
@@ -19,14 +19,21 @@ function keyedSegments(text: string, wpm: number) {
       });
       if (characterIndex < word.length - 1) segments.push({ keyed: false, seconds: unit * 3 });
     });
-    if (wordIndex < words.length - 1) segments.push({ keyed: false, seconds: unit * 7 });
+    if (wordIndex < words.length - 1) segments.push({ keyed: false, seconds: unit * wordGapUnits });
   });
   segments.push({ keyed: false, seconds: unit * 8 });
   return segments;
 }
 
-function renderKeyedTone(text: string, wpm: number, frequency: number, amplitude: number, sampleRate: number) {
-  const segments = keyedSegments(text, wpm);
+function renderKeyedTone(
+  text: string,
+  wpm: number,
+  frequency: number,
+  amplitude: number,
+  sampleRate: number,
+  wordGapUnits = 7,
+) {
+  const segments = keyedSegments(text, wpm, wordGapUnits);
   const length = Math.ceil(segments.reduce((sum, segment) => sum + segment.seconds, 0) * sampleRate);
   const samples = new Float32Array(length);
   let offset = 0;
@@ -68,5 +75,33 @@ describe("offline multipass optimizer", () => {
     expect(result.transcript).toBe("CALLED TEST");
     expect(result.candidates.some((candidate) => candidate.frequency > 1750)).toBe(true);
     expect(result.passCount).toBeGreaterThan(500);
+  }, 10_000);
+
+  it("prefers a complete hand-spaced message over a short callsign interferer", () => {
+    const sampleRate = 12_000;
+    const expected = "WEATHER GREAT FUN WITH LOCAL RADIO CLUB VIDEO ON MY RIG";
+    const wanted = renderKeyedTone(expected, 22, 795, 0.34, sampleRate, 4.1);
+    const interferer = renderKeyedTone("G0TUE G0TUE G0XEPSE K", 20, 2300, 0.52, sampleRate);
+    const length = Math.max(wanted.length, interferer.length);
+    const mixed = new Float32Array(length);
+    let seed = 29;
+    for (let index = 0; index < length; index += 1) {
+      seed = seed * 16807 % 2147483647;
+      const noise = ((seed - 1) / 2147483646 * 2 - 1) * 0.009;
+      mixed[index] = (wanted[index] || 0) + (interferer[index] || 0) + noise;
+    }
+
+    const result = optimizeMorseRecording([mixed], sampleRate, {
+      wpmHint: 20,
+      languageAssist: true,
+      minimumFrequency: 200,
+      maximumFrequency: 2600,
+    });
+
+    expect(result.frequency).toBeGreaterThanOrEqual(790);
+    expect(result.frequency).toBeLessThanOrEqual(800);
+    expect(result.transcript).toBe(expected);
+    expect(result.converged).toBe(true);
+    expect(result.candidates.some((candidate) => candidate.frequency > 2250)).toBe(true);
   }, 10_000);
 });

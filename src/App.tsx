@@ -505,7 +505,7 @@ export default function App() {
               <span>{wordCount} words</span>
               <i />
               <span>{formatDuration(elapsed)} elapsed</span>
-              {offlineResult && <span className="optimizer-summary">MULTIPASS · {offlineResult.passCount.toLocaleString()} hypotheses · {Math.round(offlineResult.confidence * 100)}%</span>}
+              {offlineResult && <span className="optimizer-summary">MULTIPASS · {offlineResult.passCount.toLocaleString()} hypotheses · {Math.round(offlineResult.frequency)} Hz · {Math.round(offlineResult.confidence * 100)}%</span>}
               <span className="copy-quality"><Check size={13} /> Confidence shading is visible on uncertain copy</span>
             </div>
           </Panel>
