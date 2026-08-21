@@ -13,6 +13,7 @@ Morsewave is an open-source, private desktop CW/Morse decoder. It listens to a m
 - Decodes International Morse letters, numerals, punctuation, and common prosigns
 - Shows live spectrum history, SNR, tone prominence, WPM, gate state, and confidence
 - Accepts microphone input, drag-and-drop audio files, and a noisy built-in demo
+- Runs uploaded recordings through a local multipass solver that tests several carriers, channels, gates, speeds, and spacing models before selecting a consensus transcript
 - Copies or exports session transcripts with uncertain characters highlighted
 - Persists decoder preferences and supports dark/light appearances
 - Processes audio locally; there is no server, analytics client, or network upload
@@ -47,6 +48,8 @@ The local macOS build includes the microphone entitlement and is ad-hoc signed. 
 
 Audio enters an `AudioWorklet`, where an overlapping 1024-sample detector advances in 256-sample hops. A 4096-sample rolling window scans the CW passband for a credible carrier and holds that carrier through key-up intervals. The stateful decoder then applies a two-sided adaptive gate, edge debounce, robust speed estimation, and a bounded timing beam before International Morse lookup. Only throttled measurements and decoded characters reach React for display.
 
+Uploaded recordings additionally take a file-only optimization path before playback. A worker resamples one or two channels to 12 kHz, surveys multiple independent carrier tracks, refines their frequencies, and extracts coherent 24 ms envelopes. It reuses those envelopes across thousands of bounded gate, timing, speed, and spacing hypotheses; ranks them by Morse timing, validity, speed, and language evidence; then combines credible passes into a timestamped consensus. The live microphone path remains low-latency and does not wait for this search.
+
 The timing decoder is intentionally independent of browser APIs. Its test suite covers canonical copy, randomized and systematic novice timing errors, key bounce, deep fades, stuck carriers, weak signals, speed-harmonic ambiguity, and the full configured 5–50 WPM range.
 
 ## Real-recording corpus
@@ -56,6 +59,7 @@ The reproducible benchmark manifest includes official W1AW exact-answer audio pl
 ```bash
 npm run corpus:fetch -- arrl-w1aw-18wpm f5lpy-off-air
 npm run corpus:evaluate -- test-corpus/cache/arrl-w1aw-18wpm-segment.wav
+npm run corpus:optimize -- test-corpus/cache/arrl-w1aw-18wpm-segment.wav
 ```
 
 See [`test-corpus/README.md`](test-corpus/README.md) for the full corpus and browser-level evaluation runner.

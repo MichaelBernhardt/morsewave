@@ -5,6 +5,12 @@ import {
   type DecoderMetrics,
 } from "./AdaptiveMorseDecoder";
 import { createDemoBuffer } from "./demoSignal";
+import {
+  optimizeMorseBuffer,
+  type OfflineDecodeOptions,
+  type OfflineDecodeProgress,
+  type OfflineDecodeResult,
+} from "./OfflineMorseOptimizer";
 
 export type AudioSourceKind = "microphone" | "file" | "demo";
 
@@ -34,6 +40,12 @@ export interface TunerConfig {
   maximumFrequency?: number;
 }
 
+export interface FileDecodeMetadata {
+  duration: number;
+  sampleRate: number;
+  optimization?: OfflineDecodeResult;
+}
+
 interface WorkletFrame {
   type: "analysis";
   timestamp: number;
@@ -52,18 +64,25 @@ export class AudioEngine {
   private stream: MediaStream | null = null;
   private playbackSource: AudioBufferSourceNode | null = null;
   private monitorGain: GainNode | null = null;
+  private analysisSplitter: ChannelSplitterNode | null = null;
   private silentGain: GainNode | null = null;
   private lastUiUpdate = 0;
   private latestSpectrum: Float32Array | undefined;
   private tunerConfig: TunerConfig = { frequency: 700, autoTune: true };
+  private fileAnalysisAbort: AbortController | null = null;
+  private suppressDecoderOutput = false;
   private readonly decoder: AdaptiveMorseDecoder;
   private readonly callbacks: AudioEngineCallbacks;
 
   constructor(decoderConfig: DecoderConfig, callbacks: AudioEngineCallbacks) {
     this.callbacks = callbacks;
     this.decoder = new AdaptiveMorseDecoder(decoderConfig, {
-      onCharacter: callbacks.onCharacter,
-      onWordGap: callbacks.onWordGap,
+      onCharacter: (character) => {
+        if (!this.suppressDecoderOutput) callbacks.onCharacter(character);
+      },
+      onWordGap: (timestamp) => {
+        if (!this.suppressDecoderOutput) callbacks.onWordGap(timestamp);
+      },
     });
   }
 
@@ -74,6 +93,8 @@ export class AudioEngine {
   async startMicrophone() {
     this.stop();
     const context = await this.ensureContext();
+    this.suppressDecoderOutput = false;
+    this.postTunerConfig(this.tunerConfig);
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("Microphone capture is not available on this system.");
     }
@@ -98,7 +119,11 @@ export class AudioEngine {
     }
   }
 
-  async startFile(file: File) {
+  async startFile(
+    file: File,
+    options: Partial<OfflineDecodeOptions> = {},
+    onProgress?: (progress: OfflineDecodeProgress) => void,
+  ): Promise<FileDecodeMetadata> {
     this.stop();
     const context = await this.ensureContext();
     let buffer: AudioBuffer;
@@ -107,19 +132,48 @@ export class AudioEngine {
     } catch (cause) {
       throw new Error("This audio file could not be decoded. Try WAV, MP3, M4A, FLAC, or OGG.", { cause });
     }
-    this.startBuffer(buffer);
-    return { duration: buffer.duration, sampleRate: buffer.sampleRate };
+    const abort = new AbortController();
+    this.fileAnalysisAbort = abort;
+    let optimization: OfflineDecodeResult;
+    try {
+      optimization = await optimizeMorseBuffer(buffer, {
+        ...options,
+        signal: abort.signal,
+        onProgress,
+      });
+    } catch (cause) {
+      if (abort.signal.aborted || cause instanceof DOMException && cause.name === "AbortError") throw cause;
+      // Silence, voice-only recordings, or an unavailable worker should not
+      // make the audio file unusable. Fall back to the proven streaming path.
+      this.suppressDecoderOutput = false;
+      this.postTunerConfig(this.tunerConfig);
+      this.startBuffer(buffer);
+      return { duration: buffer.duration, sampleRate: buffer.sampleRate };
+    } finally {
+      if (this.fileAnalysisAbort === abort) this.fileAnalysisAbort = null;
+    }
+    if (abort.signal.aborted) throw new DOMException("Decode cancelled.", "AbortError");
+    this.suppressDecoderOutput = optimization.converged;
+    if (optimization.converged) {
+      this.postTunerConfig({ frequency: optimization.frequency, autoTune: false });
+    } else this.postTunerConfig(this.tunerConfig);
+    this.startBuffer(buffer, optimization.converged ? optimization.channel : undefined);
+    return { duration: buffer.duration, sampleRate: buffer.sampleRate, optimization };
   }
 
   async startDemo() {
     this.stop();
     const context = await this.ensureContext();
+    this.suppressDecoderOutput = false;
+    this.postTunerConfig(this.tunerConfig);
     const buffer = createDemoBuffer(context);
     this.startBuffer(buffer);
     return { duration: buffer.duration, sampleRate: buffer.sampleRate };
   }
 
   stop() {
+    this.fileAnalysisAbort?.abort();
+    this.fileAnalysisAbort = null;
     if (this.playbackSource) {
       this.playbackSource.onended = null;
       try { this.playbackSource.stop(); } catch { /* Already stopped. */ }
@@ -132,7 +186,10 @@ export class AudioEngine {
     this.stream = null;
     this.monitorGain?.disconnect();
     this.monitorGain = null;
+    this.analysisSplitter?.disconnect();
+    this.analysisSplitter = null;
     this.decoder.flush(this.context ? this.context.currentTime * 1000 : undefined);
+    this.suppressDecoderOutput = false;
   }
 
   dispose() {
@@ -150,12 +207,16 @@ export class AudioEngine {
 
   updateTunerConfig(config: Partial<TunerConfig>) {
     this.tunerConfig = { ...this.tunerConfig, ...config };
+    this.postTunerConfig(this.tunerConfig);
+  }
+
+  private postTunerConfig(config: TunerConfig) {
     this.processor?.port.postMessage({
       type: "config",
-      targetFrequency: this.tunerConfig.frequency,
-      autoTune: this.tunerConfig.autoTune,
-      minimumFrequency: this.tunerConfig.minimumFrequency,
-      maximumFrequency: this.tunerConfig.maximumFrequency,
+      targetFrequency: config.frequency,
+      autoTune: config.autoTune,
+      minimumFrequency: config.minimumFrequency,
+      maximumFrequency: config.maximumFrequency,
     });
   }
 
@@ -183,13 +244,17 @@ export class AudioEngine {
     return this.context;
   }
 
-  private attachSource(source: AudioNode, monitor: boolean) {
+  private attachSource(source: AudioNode, monitor: boolean, analysisChannel?: number) {
     if (!this.context || !this.processor) throw new Error("Audio engine is not ready.");
     this.decoder.reset();
     this.lastUiUpdate = 0;
     this.latestSpectrum = undefined;
     this.source = source;
-    source.connect(this.processor);
+    if (analysisChannel !== undefined && this.context) {
+      this.analysisSplitter = this.context.createChannelSplitter(Math.max(2, analysisChannel + 1));
+      source.connect(this.analysisSplitter);
+      this.analysisSplitter.connect(this.processor, analysisChannel, 0);
+    } else source.connect(this.processor);
     if (monitor) {
       this.monitorGain = this.context.createGain();
       this.monitorGain.gain.value = 0.55;
@@ -197,12 +262,12 @@ export class AudioEngine {
     }
   }
 
-  private startBuffer(buffer: AudioBuffer) {
+  private startBuffer(buffer: AudioBuffer, analysisChannel?: number) {
     if (!this.context) throw new Error("Audio engine is not ready.");
     const source = this.context.createBufferSource();
     source.buffer = buffer;
     this.playbackSource = source;
-    this.attachSource(source, true);
+    this.attachSource(source, true, analysisChannel);
     source.onended = () => {
       if (this.playbackSource !== source) return;
       this.decoder.flush(this.context ? this.context.currentTime * 1000 : undefined);
@@ -211,6 +276,9 @@ export class AudioEngine {
       this.source = null;
       this.monitorGain?.disconnect();
       this.monitorGain = null;
+      this.analysisSplitter?.disconnect();
+      this.analysisSplitter = null;
+      this.suppressDecoderOutput = false;
       this.callbacks.onEnded();
     };
     source.start();
@@ -224,6 +292,7 @@ export class AudioEngine {
       levelDb: frame.levelDb,
       purity: frame.purity,
       frequency: frame.frequency,
+      prominenceDb: frame.prominenceDb,
     });
     // Decoder runs at audio cadence; the UI is deliberately capped near 30 fps.
     if (frame.timestamp - this.lastUiUpdate < 32 && !frame.spectrum) return;

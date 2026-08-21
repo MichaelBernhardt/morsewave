@@ -13,6 +13,7 @@ export interface SignalSample {
   levelDb: number;
   purity: number;
   frequency: number;
+  prominenceDb?: number;
 }
 
 export interface DecodedCharacter {
@@ -156,6 +157,7 @@ export class AdaptiveMorseDecoder {
     this.lastTimestamp = timestamp;
     const levelDb = clamp(Number.isFinite(sample.levelDb) ? sample.levelDb : -120, -120, 6);
     const purity = clamp(Number.isFinite(sample.purity) ? sample.purity : 0, 0, 1);
+    const prominenceDb = clamp(Number.isFinite(sample.prominenceDb) ? sample.prominenceDb ?? 0 : 0, 0, 80);
 
     const sensitivity = clamp(this.config.sensitivity, 0, 100);
     const requiredSnr = 11 - sensitivity * 0.075;
@@ -187,9 +189,19 @@ export class AdaptiveMorseDecoder {
     } else if (!this.gateOpen && !this.signalRearmed) {
       this.quietCandidateSince = null;
     }
-    const normalGate = levelDb >= thresholdDb + hysteresis && purity >= purityFloor;
+    // Very low audio tones contain only a few cycles in the analysis window,
+    // which depresses the broadband-ratio purity estimate. Relax that limb only
+    // for an already-prominent carrier safely above the level gate. The extra
+    // five-dB level margin prevents weak gap tails from holding the gate open.
+    const lowTonePurityScale = clamp(sample.frequency / 650, 0.45, 1);
+    const purityAccepted = purity >= purityFloor || (
+      prominenceDb >= 12 &&
+      levelDb >= thresholdDb + hysteresis + 5 &&
+      purity >= purityFloor * lowTonePurityScale
+    );
+    const normalGate = levelDb >= thresholdDb + hysteresis && purityAccepted;
     const reacquiredGate = this.signalRearmed &&
-      levelDb >= noiseThreshold + hysteresis && purity >= purityFloor;
+      levelDb >= noiseThreshold + hysteresis && purityAccepted;
     const rawGate = normalGate || reacquiredGate;
 
     if (!this.gateOpen) {
@@ -522,10 +534,10 @@ export class AdaptiveMorseDecoder {
       return 0.14;
     };
     const commonBigrams = new Set(
-      "TH HE IN ER AN RE ON AT EN ND TI ES OR TE OF ED IS IT AL AR ST TO NT NG SE HA AS OU IO LE VE CO ME DE HI RI RO IC NE EA RA CE LI CH LL BE MA SI OM UR WI WA AV EG GI NN FI BA AD RS MO CW CQ QR QL QU BR OW FO OX LA AZ KE EY LP PY".split(" "),
+      "TH HE IN ER AN RE ON AT EN ND TI ES OR TE OF ED IS IT AL AR ST TO NT NG SE HA AS OU IO LE VE CO ME DE HI RI RO IC NE EA RA CE LI CH LL BE MA SI OM UR WI WA AV EG GI NN FI BA AD RS MO CW CQ QR QL QU BR OW FO OX LA AZ KE EY LP PY CA YE RD DA AY SO UN GR AP PP VY IM GL".split(" "),
     );
     const commonWords = new Set(
-      "A I THE AND OF TO IN IS IT THIS THAT FOR FROM WITH ON AT BY AS BE OR ARE WAS WERE YOU YOUR MY ME WE OUR THEY HE SHE NAME CALL CALLING RADIO CW MORSE CODE SIGNAL COPY AGAIN PLEASE PSE THANKS TNX GOOD BAD FIST TEST NOW WPM TRANSITION FILE FOLLOWS WEATHER ANTENNA POWER RIG STATION OPERATOR MORNING AFTERNOON EVENING HELLO HI".split(" "),
+      "A I THE AND OF TO IN IS IT THIS THAT FOR FROM WITH ON AT BY AS BE OR ARE WAS WERE YOU YOUR MY ME WE OUR THEY HE SHE NAME CALL CALLED CALLING RADIO CW MORSE CODE SIGNAL COPY AGAIN PLEASE PSE THANKS TNX GOOD GREAT BAD FIST TEST NOW WPM TRANSITION FILE FOLLOWS WEATHER ANTENNA POWER RIG STATION OPERATOR MORNING AFTERNOON EVENING YESTERDAY SOUNDED HAPPY VERY HELLO HI ES VY IM GL".split(" "),
     );
     const currentWord = (characters: BeamCharacter[], trailingValue = "") => {
       const values = characters.map((character) => character.value);
@@ -666,7 +678,12 @@ export class AdaptiveMorseDecoder {
           characters: [...state.characters, { value, pattern: state.pattern, confidence }],
           pattern: "",
           symbolConfidence: [],
-          score: state.score + characterPenalty(value) + transitionCost,
+          // Completing a buffered word at a confirmed transmission gap should
+          // receive the same lexical tie-break as a boundary hypothesized
+          // inside the beam. Without this, an early common prefix (for example
+          // CALL + ED) is rewarded while the complete word CALLED is not.
+          score: state.score + characterPenalty(value) + transitionCost +
+            wordBoundaryPenalty(value, state.characters),
         };
       });
     }

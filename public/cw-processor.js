@@ -29,6 +29,7 @@ class CwProcessor extends AudioWorkletProcessor {
     this.carrierLocked = false;
     this.candidateFrequency = this.targetFrequency;
     this.candidateHits = 0;
+    this.carrierQuietScans = 0;
     this.tuneLowEnvelope = null;
     this.tuneHighEnvelope = null;
     this.tunePreviousMagnitude = null;
@@ -145,7 +146,15 @@ class CwProcessor extends AudioWorkletProcessor {
         const peakDb = 20 * Math.log10(peak + 1e-8);
         const modulationDb = this.tuneKeyingActivity[index] || 0;
         const modulationBonus = Math.min(26, Math.max(0, modulationDb - 1.5) * 1.35);
-        const scoreDb = peakDb + modulationBonus;
+        // While seeking, treat the configured center as a soft preference, not
+        // a narrow filter. This resolves two equally valid keyed stations in a
+        // passband without preventing acquisition elsewhere when only one is
+        // present. Once locked, continuity logic below owns the decision.
+        const binFrequency = this.minimumFrequency + index * step;
+        const acquisitionPenaltyDb = this.carrierLocked
+          ? 0
+          : Math.min(16, Math.abs(binFrequency - this.targetFrequency) / 80);
+        const scoreDb = peakDb + modulationBonus - acquisitionPenaltyDb;
         if (scoreDb > bestSelectionScoreDb) {
           bestSelectionScoreDb = scoreDb;
           bestIndex = index;
@@ -202,6 +211,18 @@ class CwProcessor extends AudioWorkletProcessor {
     const localModulationDb = this.tuneKeyingActivity?.[localIndex] || 0;
     const localSelectionScoreDb = 20 * Math.log10(localPeak + 1e-8) +
       Math.min(26, Math.max(0, localModulationDb - 1.5) * 1.35);
+    // A receiver must not splice two simultaneous CW conversations merely
+    // because the other station becomes stronger during a word gap. Keying
+    // transitions refresh the tenure of the current carrier. A distant
+    // replacement is allowed only after the track has shown no keying for a
+    // sustained interval; nearby candidates remain eligible so ordinary
+    // oscillator drift can still be followed continuously.
+    if (!this.carrierLocked || localModulationDb > 2.4) {
+      this.carrierQuietScans = 0;
+    } else {
+      this.carrierQuietScans += 1;
+    }
+    const releaseScans = Math.max(6, Math.ceil(3.5 * sampleRate / (this.hopSize * 9)));
     const keyedAlternative = this.tuneHistoryFrames >= 4 && bestModulationDb > 5.5 &&
       localModulationDb < 3.2 &&
       Math.abs(bestFrequency - this.targetFrequency) > 70 &&
@@ -221,12 +242,20 @@ class CwProcessor extends AudioWorkletProcessor {
         this.candidateFrequency = bestFrequency;
         this.candidateHits = strongCarrier ? 2 : 1;
       }
-      const canAcquire = !this.carrierLocked && (strongCarrier || this.candidateHits >= 3);
-      const canReplace = this.carrierLocked && strongCarrier && this.candidateHits >= 6;
+      // Do not lock on the first loud FFT bin. At startup the modulation
+      // envelopes have not separated yet, so an impulse or window sidelobe can
+      // otherwise win permanently. Two stable, modulation-ranked scans are
+      // enough to acquire without materially clipping the first character.
+      const canAcquire = !this.carrierLocked && this.tuneHistoryFrames >= 4 &&
+        this.candidateHits >= 4;
+      const nearbyCandidate = Math.abs(this.candidateFrequency - this.targetFrequency) <= 90;
+      const canReplace = this.carrierLocked && strongCarrier && this.candidateHits >= 6 &&
+        (nearbyCandidate || this.carrierQuietScans >= releaseScans);
       if (canAcquire || canReplace) {
         this.targetFrequency = this.candidateFrequency;
         this.carrierLocked = true;
         this.candidateHits = 0;
+        this.carrierQuietScans = 0;
       }
       this.peakProminenceDb = globalProminenceDb;
     } else {

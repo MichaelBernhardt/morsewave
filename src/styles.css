@@ -218,6 +218,7 @@ button:disabled {
 .status-listening i,
 .status-playing i,
 .status-starting i,
+.status-optimizing i,
 .session-live i {
   background: var(--green);
   box-shadow: 0 0 0 3px var(--green-soft), 0 0 8px var(--green);
@@ -571,6 +572,24 @@ kbd {
   line-height: 1.5;
 }
 
+.optimizer-progress {
+  width: min(360px, 100%);
+  height: 3px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.optimizer-progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--green) 55%, transparent);
+  transition: width 180ms ease;
+}
+
 .empty-transcript > button {
   height: 32px;
   display: flex;
@@ -614,6 +633,12 @@ kbd {
 }
 
 .copy-quality svg { color: var(--amber); }
+
+.optimizer-summary {
+  color: var(--green);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0.025em;
+}
 
 .scope-panel {
   display: grid;

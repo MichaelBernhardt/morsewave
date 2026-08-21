@@ -23,10 +23,11 @@ import {
 } from "lucide-react";
 import { AudioEngine, type AnalysisFrame, type AudioSourceKind } from "./audio/AudioEngine";
 import type { DecodedCharacter } from "./audio/AdaptiveMorseDecoder";
+import type { OfflineDecodeProgress, OfflineDecodeResult } from "./audio/OfflineMorseOptimizer";
 import { Panel, RangeControl, Toggle } from "./components/Controls";
 import { SignalScope } from "./components/SignalScope";
 
-type RunStatus = "idle" | "starting" | "listening" | "playing" | "complete" | "error";
+type RunStatus = "idle" | "starting" | "optimizing" | "listening" | "playing" | "complete" | "error";
 type Theme = "dark" | "light";
 
 interface Settings {
@@ -59,6 +60,7 @@ const DEFAULT_SETTINGS: Settings = {
 const STATUS_COPY: Record<RunStatus, string> = {
   idle: "RX standby",
   starting: "Arming input",
+  optimizing: "Multipass solve",
   listening: "RX active",
   playing: "File analysis",
   complete: "Buffer complete",
@@ -101,13 +103,15 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [offlineResult, setOfflineResult] = useState<OfflineDecodeResult | null>(null);
+  const [offlineProgress, setOfflineProgress] = useState<OfflineDecodeProgress | null>(null);
   const engineRef = useRef<AudioEngine | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const tokenId = useRef(0);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef(status);
 
-  const active = status === "listening" || status === "playing" || status === "starting";
+  const active = status === "listening" || status === "playing" || status === "starting" || status === "optimizing";
 
   const appendCharacter = useCallback((character: DecodedCharacter) => {
     const token: TranscriptToken = { ...character, id: tokenId.current++ };
@@ -201,6 +205,8 @@ export default function App() {
     setElapsed(0);
     setError(null);
     setFrame(null);
+    setOfflineResult(null);
+    setOfflineProgress(null);
     setStatus("starting");
   }, []);
 
@@ -240,18 +246,42 @@ export default function App() {
     setTokens([]);
     setLastCharacter(null);
     beginRun("file", file.name);
+    setStatus("optimizing");
     try {
-      const metadata = await engineRef.current?.startFile(file);
+      const metadata = await engineRef.current?.startFile(file, {
+        wpmHint: settings.wpmHint,
+        languageAssist: settings.languageAssist,
+        minimumFrequency: 200,
+        maximumFrequency: 4000,
+      }, setOfflineProgress);
       setSourceDuration(metadata?.duration ?? null);
+      if (metadata?.optimization?.converged) {
+        const optimizedTokens = metadata.optimization.tokens.map((token) => ({
+          ...token,
+          id: tokenId.current++,
+        }));
+        setTokens(optimizedTokens);
+        setLastCharacter([...optimizedTokens].reverse().find((token) => !token.space) ?? null);
+        setOfflineResult(metadata.optimization);
+        setOfflineProgress(null);
+      } else if (metadata?.optimization) {
+        setOfflineProgress(null);
+        setToast("Multipass inconclusive · streaming decoder engaged");
+      } else {
+        setOfflineProgress(null);
+        setToast("Streaming decoder engaged");
+      }
+      setStartedAt(performance.now());
       setStatus("playing");
     } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") return;
       const message = cause instanceof Error ? cause.message : "The file could not be opened.";
       setError(message);
       setStatus("error");
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
-  }, [beginRun]);
+  }, [beginRun, settings.languageAssist, settings.wpmHint]);
 
   const stop = useCallback(() => {
     engineRef.current?.stop();
@@ -263,6 +293,8 @@ export default function App() {
     setTokens([]);
     setLastCharacter(null);
     setElapsed(0);
+    setOfflineResult(null);
+    setOfflineProgress(null);
     tokenId.current = 0;
     engineRef.current?.resetDecoder(true);
     setToast("Session cleared");
@@ -331,10 +363,10 @@ export default function App() {
     if (file) void startFile(file);
   };
 
-  const detectedFrequency = frame?.frequency ?? settings.frequency;
-  const estimatedWpm = frame?.metrics.wpm ?? settings.wpmHint;
+  const detectedFrequency = offlineResult?.frequency ?? frame?.frequency ?? settings.frequency;
+  const estimatedWpm = offlineResult?.wpm ?? frame?.metrics.wpm ?? settings.wpmHint;
   const signalSnr = frame?.metrics.snrDb ?? 0;
-  const signalLocked = Boolean(active && frame && frame.prominenceDb >= 5);
+  const signalLocked = Boolean(offlineResult || active && frame && frame.prominenceDb >= 5);
   const timingJitter = frame?.metrics.timingJitter ?? 0;
   const recoveredEdges = frame?.metrics.recoveredEdges ?? 0;
 
@@ -413,7 +445,7 @@ export default function App() {
           disabled={status === "starting"}
         >
           {active ? <Square size={14} fill="currentColor" /> : <Play size={15} fill="currentColor" />}
-          {status === "starting" ? "ARMING…" : active ? "STOP RX" : "ARM RX"}
+          {status === "starting" ? "ARMING…" : status === "optimizing" ? "CANCEL SOLVE" : active ? "STOP RX" : "ARM RX"}
           <kbd>Space</kbd>
         </button>
       </div>
@@ -459,8 +491,9 @@ export default function App() {
                 <div className="empty-transcript">
                   <div className="empty-icon"><Radio size={25} /></div>
                   <div>
-                    <strong>{active ? "ACQUIRING KEYED CARRIER" : "INPUT PATH NOT ARMED"}</strong>
-                    <p>{active ? "Estimating carrier, noise floor, and mark/gap clusters. Ambiguous hand timing remains buffered." : "Arm the audio input, load a recording, or inject the internal reference signal."}</p>
+                    <strong>{status === "optimizing" ? (offlineProgress?.detail ?? "SURVEYING CARRIER TRACKS").toUpperCase() : active ? "ACQUIRING KEYED CARRIER" : "INPUT PATH NOT ARMED"}</strong>
+                    <p>{status === "optimizing" ? `Adaptive file solver · ${Math.round((offlineProgress?.fraction ?? 0) * 100)}% · testing carrier, gate, speed, and spacing hypotheses.` : active ? "Estimating carrier, noise floor, and mark/gap clusters. Ambiguous hand timing remains buffered." : "Arm the audio input, load a recording, or inject the internal reference signal."}</p>
+                    {status === "optimizing" && <div className="optimizer-progress"><i style={{ width: `${Math.round((offlineProgress?.fraction ?? 0) * 100)}%` }} /></div>}
                   </div>
                   {!active && <button onClick={() => void startDemo()}><Play size={14} fill="currentColor" /> Inject reference</button>}
                 </div>
@@ -472,6 +505,7 @@ export default function App() {
               <span>{wordCount} words</span>
               <i />
               <span>{formatDuration(elapsed)} elapsed</span>
+              {offlineResult && <span className="optimizer-summary">MULTIPASS · {offlineResult.passCount.toLocaleString()} hypotheses · {Math.round(offlineResult.confidence * 100)}%</span>}
               <span className="copy-quality"><Check size={13} /> Confidence shading is visible on uncertain copy</span>
             </div>
           </Panel>
@@ -480,7 +514,7 @@ export default function App() {
             eyebrow="IF analysis"
             title="Narrow-band spectrum"
             className="scope-panel"
-            action={<span className={`lock-badge ${signalLocked ? "is-locked" : ""}`}><i /> {signalLocked ? "Tone locked" : "Seeking"}</span>}
+            action={<span className={`lock-badge ${signalLocked ? "is-locked" : ""}`}><i /> {offlineResult ? `Track ${offlineResult.channel + 1} selected` : signalLocked ? "Tone locked" : "Seeking"}</span>}
           >
             <SignalScope frame={frame} active={active} />
             <div className="scope-readout">
@@ -501,12 +535,12 @@ export default function App() {
           <div className="metric-card">
             <span className="metric-icon amber"><Zap size={16} /></span>
             <div><span>Estimated speed</span><strong>{estimatedWpm.toFixed(1)}<small> WPM</small></strong></div>
-            <em>{settings.adaptiveSpeed ? "Tracking" : "Fixed"}</em>
+            <em>{offlineResult ? "Consensus" : settings.adaptiveSpeed ? "Tracking" : "Fixed"}</em>
           </div>
           <div className="metric-card">
             <span className="metric-icon violet"><Radio size={16} /></span>
             <div><span>Timing deviation</span><strong>{frame ? timingJitter.toFixed(1) : "—"}<small>% σ</small></strong></div>
-            <em>{settings.handKeyAssist ? "BEAM / 64" : "EDGE / 1"}</em>
+            <em>{offlineResult ? `${offlineResult.passCount.toLocaleString()} PASSES` : settings.handKeyAssist ? "BEAM / 64" : "EDGE / 1"}</em>
           </div>
           <div className="metric-card current-symbol-card">
             <div><span>Current character</span><strong className="morse-symbols" aria-label={frame?.metrics.currentPattern || "None"}>

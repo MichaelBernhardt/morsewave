@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "corpus:fetch": "node scripts/fetch-real-corpus.mjs",
     "corpus:evaluate": "tsx scripts/evaluate-wav.ts",
+    "corpus:optimize": "tsx scripts/optimize-wav.ts",
     "check": "npm run test && npm run build",
     "tauri": "tauri"
   },
