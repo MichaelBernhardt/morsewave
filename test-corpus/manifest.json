@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "samples": [
+    {
+      "id": "arrl-w1aw-18wpm",
+      "title": "W1AW 18 WPM transition run",
+      "sourcePage": "https://www.arrl.org/code-practice-files",
+      "audioUrl": "https://www.arrl.org/files/file/Morse/260304_18WPM.mp3",
+      "transcriptUrl": "https://www.arrl.org/files/file/Morse/260304_18.txt",
+      "file": "arrl-w1aw-18wpm.mp3",
+      "license": "ARRL site terms; local evaluation only, do not redistribute",
+      "segment": { "start": 0, "duration": 25 },
+      "knownCopy": "= NOW 18 WPM TRANSITION FILE FOLLOWS =",
+      "class": "exact ground truth; shaped 750 Hz keyed audio"
+    },
+    {
+      "id": "f5lpy-off-air",
+      "title": "F5LPY 40 m CQ loop captured through WebSDR",
+      "sourcePage": "https://freesound.org/people/klankbeeld/sounds/243351/",
+      "audioUrl": "https://cdn.freesound.org/previews/243/243351_1648170-hq.mp3",
+      "file": "f5lpy-off-air.mp3",
+      "license": "CC BY 4.0; attribution: klankbeeld",
+      "segment": { "start": 0, "duration": 30 },
+      "knownCopy": "CQ CQ CQ CQ DE F5LPY (repeated; capture starts mid-cycle)",
+      "class": "real HF path, QSB, interference, uneven spacing"
+    },
+    {
+      "id": "wii800-static",
+      "title": "Regulated station ID through static",
+      "sourcePage": "https://freesound.org/people/ERH/sounds/34418/",
+      "audioUrl": "https://cdn.freesound.org/previews/34/34418_215874-hq.mp3",
+      "file": "wii800-static.mp3",
+      "license": "CC BY 4.0; attribution: ERH",
+      "segment": { "start": 0, "duration": 4.873 },
+      "knownCopy": "WII800 (the initial W begins before the usable keyed audio; audible suffix II800)",
+      "class": "real radio static, tuning transient, clipped initial character"
+    },
+    {
+      "id": "noisy-40m",
+      "title": "Noisy 40 m amateur CW",
+      "sourcePage": "https://freesound.org/people/xperseai/sounds/752469/",
+      "audioUrl": "https://cdn.freesound.org/previews/752/752469_2093688-hq.mp3",
+      "file": "noisy-40m.mp3",
+      "license": "CC0 1.0",
+      "segment": { "start": 0, "duration": 23.838 },
+      "knownCopy": null,
+      "class": "very low SNR, wideband receiver noise, carrier near 4 kHz"
+    },
+    {
+      "id": "w1aw-tri-band",
+      "title": "W1AW bulletin received on three HF bands simultaneously",
+      "sourcePage": "https://freesound.org/people/kb7clx/sounds/394465/",
+      "audioUrl": "https://cdn.freesound.org/previews/394/394465_922322-lq.mp3",
+      "file": "w1aw-tri-band.mp3",
+      "license": "CC0 1.0",
+      "segment": { "start": 0, "duration": 45 },
+      "knownCopy": "W1AW 18 WPM bulletin; three synchronized carriers",
+      "class": "three competing pitches, transatlantic QSB, static crashes, digital interference"
+    },
+    {
+      "id": "dirty-contact",
+      "title": "Shortwave CW with dirty-key contact chatter",
+      "sourcePage": "https://freesound.org/people/kb7clx/sounds/396348/",
+      "audioUrl": "https://cdn.freesound.org/previews/396/396348_922322-lq.mp3",
+      "file": "dirty-contact.mp3",
+      "license": "CC0 1.0",
+      "segment": { "start": 145, "duration": 35 },
+      "knownCopy": "VVVV [error] VG2G [error] VG2G DE KSFI K QTC K",
+      "class": "dual receivers, static, contact chatter, real transmitter fault"
+    },
+    {
+      "id": "ucsb-1890-cylinder",
+      "title": "1890 brown-wax cylinder Morse transmission",
+      "sourcePage": "https://alexandria.ucsb.edu/lib/ark%3A/48907/f3s181z8",
+      "audioUrl": "https://cylinders.s3-us-west-2.amazonaws.com/13000/13122/cusb-cyl13122d.mp3",
+      "file": "ucsb-1890-cylinder.mp3",
+      "license": "CC BY-NC; attribution: University of California, Santa Barbara Library; evaluation only",
+      "segment": { "start": 0, "duration": 139.35 },
+      "knownCopy": "BOUNDS DEPENDS UPON SEVERAL CONCRETE FACTORS NOT THE LEAST OF",
+      "class": "historic hand key, extreme timing distortion, cylinder wow/flutter, surface noise, approximately 5 WPM"
+    },
+    {
+      "id": "marine-electric-sos",
+      "title": "SS Marine Electric WOOH distress traffic",
+      "sourcePage": "https://archive.org/details/SsMarineElectricWoohSos",
+      "audioUrl": "https://ia600605.us.archive.org/13/items/SsMarineElectricWoohSos/Marine_Electric_SOS.mp3",
+      "transcriptUrl": "https://ia600605.us.archive.org/13/items/SsMarineElectricWoohSos/Transcript_SOS_WOOH.txt",
+      "file": "marine-electric-sos.mp3",
+      "license": "CC0 1.0",
+      "segment": { "start": 600, "duration": 60 },
+      "knownCopy": "Full line-by-line transcript is supplied separately; benchmark segment is intentionally dominated by QRM and competing carriers",
+      "class": "real 500 kHz distress traffic, multiple stations, severe QRM, tuners, fades, auto-alarm and steady heterodynes"
+    },
+    {
+      "id": "cj3a-deep-notches",
+      "title": "Canadian station CJ3A calling CQ on 40 m",
+      "sourcePage": "https://freesound.org/people/CT1ETE/sounds/462888/",
+      "audioUrl": "https://cdn.freesound.org/previews/462/462888_9650514-hq.mp3",
+      "file": "cj3a-deep-notches.mp3",
+      "license": "CC0 1.0",
+      "segment": { "start": 0, "duration": 22.375 },
+      "knownCopy": "CJ3A calling CQ (repeated)",
+      "class": "slow off-air CW with deep RF/audio notches that split marks into false edges"
+    }
+  ]
+}
