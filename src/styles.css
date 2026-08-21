@@ -248,6 +248,34 @@ button:disabled {
   transition: color 150ms ease, background 150ms ease, border-color 150ms ease, transform 150ms ease;
 }
 
+.details-toggle {
+  height: 31px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text-soft);
+  background: color-mix(in srgb, var(--panel-soft) 82%, transparent);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease, border-color 150ms ease;
+}
+
+.details-toggle svg { color: var(--green); }
+.details-toggle:hover,
+.details-toggle.is-active {
+  border-color: color-mix(in srgb, var(--green) 32%, var(--line));
+  color: var(--text);
+  background: var(--green-soft);
+}
+
 .icon-button:hover,
 .panel-tools button:hover:not(:disabled),
 .modal-close:hover {
@@ -419,6 +447,12 @@ kbd {
   background-size: 32px 32px;
 }
 
+.dashboard.is-focused {
+  width: min(1040px, 100%);
+  justify-self: center;
+  padding: 21px 28px 19px;
+}
+
 .primary-grid,
 .secondary-grid {
   display: grid;
@@ -427,6 +461,11 @@ kbd {
 
 .primary-grid {
   grid-template-columns: minmax(460px, 1.13fr) minmax(360px, 0.87fr);
+}
+
+.dashboard.is-focused .primary-grid {
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1;
 }
 
 .secondary-grid {
@@ -493,6 +532,21 @@ kbd {
   grid-template-rows: 60px minmax(0, 1fr) 36px;
 }
 
+.dashboard.is-focused .transcript-panel {
+  height: clamp(430px, calc(100vh - 210px), 720px);
+  grid-template-rows: 60px minmax(0, 1fr) 48px;
+  border-color: color-mix(in srgb, var(--green) 13%, var(--line));
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.025), 0 18px 48px rgba(0, 0, 0, 0.09);
+}
+
+.dashboard.is-focused .transcript-panel .panel-heading {
+  padding-inline: 22px;
+}
+
+.dashboard.is-focused .transcript-panel h2 {
+  font-size: 14px;
+}
+
 .transcript {
   min-height: 0;
   position: relative;
@@ -500,6 +554,16 @@ kbd {
   padding: 21px 22px 14px;
   scrollbar-width: thin;
   scrollbar-color: var(--faint) transparent;
+}
+
+.dashboard.is-focused .transcript {
+  padding: 29px 32px 20px;
+}
+
+.dashboard.is-focused .transcript > p {
+  font-size: clamp(24px, 3vw, 36px);
+  line-height: 1.68;
+  letter-spacing: 0.065em;
 }
 
 .transcript.has-copy {
@@ -529,6 +593,20 @@ kbd {
   margin-top: 16px;
   padding-top: 12px;
   border-top: 1px solid var(--line);
+}
+
+.copy-advisory.is-focused {
+  gap: 10px;
+  margin-top: 22px;
+  padding: 14px 15px;
+  border: 1px solid color-mix(in srgb, var(--green) 18%, var(--line));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--green) 3%, var(--panel-soft));
+}
+
+.copy-advisory.is-focused .advisory-expansion {
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .copy-advisory-heading {
@@ -574,6 +652,8 @@ kbd {
 }
 
 .marker-chip span { color: var(--text-soft); }
+.marker-strip.is-compact { gap: 6px; }
+.marker-more { color: var(--muted); }
 
 .advisory-expansion {
   display: grid;
@@ -646,6 +726,61 @@ kbd {
   font-style: normal;
   line-height: 1.45;
 }
+
+.focused-disclosure {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--amber) 20%, var(--line));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--amber) 3%, var(--panel-soft));
+  color: var(--text-soft);
+}
+
+.focused-disclosure summary {
+  color: var(--amber);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.focused-disclosure p {
+  margin: 10px 0 6px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.focused-disclosure small {
+  color: var(--faint);
+  font-size: 9px;
+}
+
+.signal-details-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 15px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--muted);
+  background: var(--panel-soft);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+
+.signal-details-link:hover {
+  border-color: color-mix(in srgb, var(--green) 28%, var(--line));
+  color: var(--text-soft);
+}
+
+.signal-details-link svg { color: var(--green); }
 
 .station-lanes {
   display: grid;
@@ -827,12 +962,23 @@ kbd {
   letter-spacing: 0.04em;
 }
 
+.dashboard.is-focused .empty-transcript strong {
+  font-size: 12px;
+  letter-spacing: 0.055em;
+}
+
 .empty-transcript p {
   max-width: 470px;
   margin: 0;
   color: var(--muted);
   font-size: 10.5px;
   line-height: 1.5;
+}
+
+.dashboard.is-focused .empty-transcript p {
+  max-width: 560px;
+  font-size: 12px;
+  line-height: 1.65;
 }
 
 .optimizer-progress {
@@ -896,6 +1042,25 @@ kbd {
 }
 
 .copy-quality svg { color: var(--amber); }
+
+.focused-copy-summary {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-left: auto;
+  color: var(--text-soft);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.025em;
+  white-space: nowrap;
+}
+
+.focused-copy-summary > span {
+  padding: 0 9px;
+  border-left: 1px solid var(--line);
+}
+
+.focused-copy-summary > span:last-child { padding-right: 0; color: var(--green); }
 
 .optimizer-summary {
   color: var(--green);
@@ -1409,10 +1574,42 @@ input[type="range"]:disabled { cursor: default; }
 }
 
 @media (max-width: 760px) {
-  .topbar { grid-template-columns: 1fr auto; }
-  .topbar-center { display: none; }
+  .app-shell { grid-template-rows: 62px auto auto 31px; }
+  .topbar { grid-template-columns: minmax(0, 1fr) auto auto; padding: 0 12px; gap: 7px; }
+  .brand { gap: 8px; }
+  .brand-mark { width: 30px; height: 30px; }
+  .brand span { display: none; }
+  .topbar-center { display: flex; }
+  .privacy-chip { display: none; }
+  .status-chip { padding-inline: 7px; }
+  .topbar-actions { gap: 3px; }
+  .details-toggle { width: 31px; justify-content: center; padding: 0; }
+  .details-toggle span { display: none; }
+  .command-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 7px 10px;
+    padding: 8px 12px;
+  }
+  .source-picker { grid-column: 1 / -1; width: 100%; height: 44px; }
   .source-picker-label, .transport-button kbd { display: none; }
-  .source-picker button { padding: 0 8px; }
+  .source-picker button { height: 36px; flex: 1; justify-content: center; padding: 0 7px; font-size: 10px; }
+  .source-context { display: flex; grid-column: 1; min-width: 0; }
+  .source-context span { max-width: none; }
+  .transport-button { grid-column: 2; margin: 0; }
+  .dashboard.is-focused { padding: 12px; }
+  .dashboard.is-focused .transcript-panel {
+    height: clamp(430px, calc(100vh - 210px), 620px);
+    grid-template-rows: 56px minmax(0, 1fr) 45px;
+  }
+  .dashboard.is-focused .transcript-panel .panel-heading { height: 56px; padding-inline: 15px; }
+  .dashboard.is-focused .transcript { padding: 22px 18px 16px; }
+  .dashboard.is-focused .transcript > p { font-size: clamp(21px, 7vw, 28px); }
+  .dashboard.is-focused .copy-footer > span:not(.focused-copy-summary),
+  .dashboard.is-focused .copy-footer > i { display: none; }
+  .focused-copy-summary { width: 100%; justify-content: space-between; margin: 0; }
+  .focused-copy-summary > span:first-child { border-left: 0; padding-left: 0; }
+  .focused-copy-summary > span:last-child { padding-right: 0; }
   .metric-strip { height: auto; grid-template-columns: 1fr 1fr; }
   .metric-card { min-height: 68px; border-bottom: 1px solid var(--line); }
   .control-columns { grid-template-columns: 1fr; }
@@ -1433,6 +1630,15 @@ input[type="range"]:disabled { cursor: default; }
   .copy-quality { display: none; }
   .app-footer { grid-template-columns: 1fr auto; }
   .footer-center { display: none; }
+}
+
+@media (max-width: 470px) {
+  .status-chip { max-width: 84px; overflow: hidden; text-overflow: ellipsis; }
+  .topbar .icon-button[title="Toggle appearance"] { display: none; }
+  .source-picker button { gap: 4px; padding-inline: 5px; }
+  .source-picker button svg { width: 13px; }
+  .source-context { font-size: 9px; }
+  .copy-advisory.is-focused { padding-inline: 11px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

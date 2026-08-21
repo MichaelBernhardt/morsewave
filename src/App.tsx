@@ -12,6 +12,7 @@ import {
   Play,
   Radio,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Square,
   Sun,
@@ -63,13 +64,13 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 const STATUS_COPY: Record<RunStatus, string> = {
-  idle: "RX standby",
-  starting: "Arming input",
-  optimizing: "Multipass solve",
-  listening: "RX active",
-  playing: "File analysis",
-  complete: "Buffer complete",
-  error: "Input fault",
+  idle: "Ready",
+  starting: "Opening input",
+  optimizing: "Multipass analysis",
+  listening: "Live decode",
+  playing: "Recording decode",
+  complete: "Decode complete",
+  error: "Input error",
 };
 
 function loadSettings(): Settings {
@@ -155,6 +156,9 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [showDetails, setShowDetails] = useState(
+    () => localStorage.getItem("morsewave.view") === "technical",
+  );
   const [offlineResult, setOfflineResult] = useState<OfflineDecodeResult | null>(null);
   const [offlineProgress, setOfflineProgress] = useState<OfflineDecodeProgress | null>(null);
   const engineRef = useRef<AudioEngine | null>(null);
@@ -229,6 +233,10 @@ export default function App() {
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
+
+  useEffect(() => {
+    localStorage.setItem("morsewave.view", showDetails ? "technical" : "focused");
+  }, [showDetails]);
 
   useEffect(() => {
     if (!active || startedAt === null) return;
@@ -412,28 +420,39 @@ export default function App() {
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+      if (event.key === "Escape" && showHelp) {
+        event.preventDefault();
+        setShowHelp(false);
+        return;
+      }
+      if (event.key === "Escape" && statusRef.current !== "idle") {
+        event.preventDefault();
+        stop();
+        return;
+      }
+      if (showHelp || target?.matches("input, textarea, select, [contenteditable='true']")) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
         event.preventDefault();
         fileInputRef.current?.click();
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         clearSession();
-      } else if (event.key === "Escape" && statusRef.current !== "idle") {
-        stop();
       } else if (event.code === "Space" && !event.metaKey && !event.ctrlKey) {
+        if (target?.closest("button, a, summary, [role='button']")) return;
         event.preventDefault();
-        if (["listening", "playing", "starting"].includes(statusRef.current)) stop();
+        if (["listening", "playing", "optimizing"].includes(statusRef.current)) stop();
+        else if (statusRef.current === "starting") return;
         else void startMicrophone();
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [clearSession, startMicrophone, stop]);
+  }, [clearSession, showHelp, startMicrophone, stop]);
 
   const handleDrop = (event: React.DragEvent) => {
     event.preventDefault();
     setDragActive(false);
+    if (statusRef.current === "starting") return;
     const file = event.dataTransfer.files[0];
     if (file) void startFile(file);
   };
@@ -445,10 +464,13 @@ export default function App() {
   const signalLocked = Boolean(trustedOfflineResult || active && frame && frame.prominenceDb >= 5);
   const timingJitter = frame?.metrics.timingJitter ?? 0;
   const recoveredEdges = frame?.metrics.recoveredEdges ?? 0;
+  const displayConfidence = trustedOfflineResult?.confidence ?? averageConfidence;
+  const sourceEngaged = status !== "idle" && status !== "error";
+  const alternateSignalCount = stationLanes.filter((lane) => !lane.selected).length;
 
   return (
     <div
-      className={`app-shell ${dragActive ? "is-dragging" : ""}`}
+      className={`app-shell ${showDetails ? "is-technical" : "is-focused"} ${dragActive ? "is-dragging" : ""}`}
       onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }}
       onDragOver={(event) => event.preventDefault()}
       onDragLeave={(event) => {
@@ -463,16 +485,26 @@ export default function App() {
           </div>
           <div>
             <strong>Morsewave</strong>
-            <span>CW signal workstation</span>
+            <span>Adaptive CW decoder</span>
           </div>
         </div>
         <div className="topbar-center">
-          <span className="privacy-chip"><ShieldCheck size={13} /> LOCAL DSP / NO UPLINK</span>
-          <span className={`status-chip status-${status}`}>
+          <span className="privacy-chip"><ShieldCheck size={13} /> ON-DEVICE DSP</span>
+          <span className={`status-chip status-${status}`} role="status" aria-live="polite">
             <i /> {STATUS_COPY[status]}
           </span>
         </div>
         <div className="topbar-actions">
+          <button
+            className={`details-toggle ${showDetails ? "is-active" : ""}`}
+            onClick={() => setShowDetails((current) => !current)}
+            aria-pressed={showDetails}
+            aria-label={showDetails ? "Switch to Focus view" : "Open Signal details"}
+            title={showDetails ? "Return to the focused copy view" : "Open spectrum, lanes, metrics, and decoder controls"}
+          >
+            <SlidersHorizontal size={14} />
+            <span>{showDetails ? "Focus view" : "Signal details"}</span>
+          </button>
           <button className="icon-button" onClick={() => setShowHelp(true)} aria-label="Help and shortcuts" title="Help and shortcuts">
             <CircleHelp size={18} />
           </button>
@@ -489,20 +521,36 @@ export default function App() {
 
       <div className="command-bar">
         <div className="source-picker" aria-label="Audio source">
-          <span className="source-picker-label">INPUT</span>
-          <button className={source === "microphone" ? "is-selected" : ""} onClick={() => void startMicrophone()}>
+          <span className="source-picker-label">SOURCE</span>
+          <button
+            className={source === "microphone" && sourceEngaged ? "is-selected" : ""}
+            aria-pressed={source === "microphone" && sourceEngaged}
+            disabled={status === "starting"}
+            onClick={() => void startMicrophone()}
+          >
             <Mic size={15} /> Microphone
           </button>
-          <button className={source === "file" ? "is-selected" : ""} onClick={() => fileInputRef.current?.click()}>
-            <FileAudio size={15} /> File
+          <button
+            className={source === "file" && sourceEngaged ? "is-selected" : ""}
+            aria-pressed={source === "file" && sourceEngaged}
+            disabled={status === "starting"}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <FileAudio size={15} /> Open recording
           </button>
-          <button className={source === "demo" ? "is-selected" : ""} onClick={() => void startDemo()}>
+          <button
+            className={source === "demo" && sourceEngaged ? "is-selected" : ""}
+            aria-pressed={source === "demo" && sourceEngaged}
+            disabled={status === "starting"}
+            onClick={() => void startDemo()}
+          >
             <Sparkles size={15} /> Demo
           </button>
           <input
             ref={fileInputRef}
             className="visually-hidden"
             type="file"
+            disabled={status === "starting"}
             accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg,.aiff,.aif"
             onChange={(event) => {
               const file = event.target.files?.[0];
@@ -515,15 +563,13 @@ export default function App() {
           <span>{sourceName}</span>
           {sourceDuration !== null && <em>{formatDuration(sourceDuration)}</em>}
         </div>
-        <button
-          className={`transport-button ${active ? "is-stop" : ""}`}
-          onClick={active ? stop : startMicrophone}
-          disabled={status === "starting"}
-        >
-          {active ? <Square size={14} fill="currentColor" /> : <Play size={15} fill="currentColor" />}
-          {status === "starting" ? "ARMING…" : status === "optimizing" ? "CANCEL SOLVE" : active ? "STOP RX" : "ARM RX"}
-          <kbd>Space</kbd>
-        </button>
+        {active && (
+          <button className="transport-button is-stop" onClick={stop} disabled={status === "starting"}>
+            <Square size={14} fill="currentColor" />
+            {status === "starting" ? "OPENING…" : status === "optimizing" ? "CANCEL ANALYSIS" : "STOP"}
+            <kbd>Space</kbd>
+          </button>
+        )}
       </div>
 
       {error && (
@@ -533,17 +579,17 @@ export default function App() {
         </div>
       )}
 
-      <main className="dashboard">
+      <main className={`dashboard ${showDetails ? "is-technical" : "is-focused"}`}>
         <div className="primary-grid">
           <Panel
-            eyebrow="Decode buffer"
-            title="Raw on-air copy"
+            eyebrow={showDetails ? "Decode buffer" : "Primary copy"}
+            title={showDetails ? "Raw on-air copy" : "Decoded copy"}
             className="transcript-panel"
             action={
               <div className="panel-tools">
-                <button onClick={() => void copyTranscript()} disabled={!transcript} title="Copy transcript"><Copy size={15} /></button>
-                <button onClick={exportTranscript} disabled={!transcript} title="Export transcript"><Download size={15} /></button>
-                <button onClick={clearSession} disabled={!tokens.length} title="Clear session"><Trash2 size={15} /></button>
+                <button onClick={() => void copyTranscript()} disabled={!transcript} title="Copy transcript" aria-label="Copy transcript"><Copy size={15} /></button>
+                <button onClick={exportTranscript} disabled={!transcript} title="Export transcript" aria-label="Export transcript"><Download size={15} /></button>
+                <button onClick={clearSession} disabled={!tokens.length} title="Clear session" aria-label="Clear transcript"><Trash2 size={15} /></button>
               </div>
             }
           >
@@ -571,21 +617,24 @@ export default function App() {
                     {active && <span className="decode-cursor" aria-hidden="true" />}
                   </p>
                   {hamInterpretation && hamMarkers.length > 0 && (
-                    <section className="copy-advisory" aria-labelledby="copy-advisory-title">
+                    <section className={`copy-advisory ${showDetails ? "" : "is-focused"}`} aria-labelledby="copy-advisory-title">
                       <div className="copy-advisory-heading">
-                        <span id="copy-advisory-title">HAM SEMANTIC LAYER</span>
-                        <small>OPERATOR AID · NON-AUTHORITATIVE</small>
+                        <span id="copy-advisory-title">{showDetails ? "HAM SEMANTIC LAYER" : "HAM CONTEXT"}</span>
+                        <small>{showDetails ? "OPERATOR AID · NON-AUTHORITATIVE" : "ADVISORY · VERIFY AGAINST COPY"}</small>
                       </div>
-                      <ul className="marker-strip" aria-label="Recognized CW operating markers">
-                        {hamMarkers.map((marker) => (
+                      <ul className={`marker-strip ${showDetails ? "" : "is-compact"}`} aria-label="Recognized CW operating markers">
+                        {(showDetails ? hamMarkers : hamMarkers.slice(0, 4)).map((marker) => (
                           <li className="marker-chip" key={`${marker.token}:${marker.expansion}`}>
                             <code>{marker.token}</code>
                             <span>{marker.expansion}</span>
                           </li>
                         ))}
+                        {!showDetails && hamMarkers.length > 4 && (
+                          <li className="marker-chip marker-more">+{hamMarkers.length - 4} markers</li>
+                        )}
                       </ul>
                       <p className="advisory-expansion">
-                        <span>ADVISORY EXPANSION</span>
+                        <span>{showDetails ? "ADVISORY EXPANSION" : "LIKELY MEANING"}</span>
                         <span>{hamInterpretation.expandedText}</span>
                       </p>
                     </section>
@@ -595,14 +644,14 @@ export default function App() {
                 <div className="empty-transcript">
                   <div className="empty-icon"><Radio size={25} /></div>
                   <div>
-                    <strong>{status === "optimizing" ? (offlineProgress?.detail ?? "SURVEYING CARRIER TRACKS").toUpperCase() : active ? "ACQUIRING KEYED CARRIER" : "INPUT PATH NOT ARMED"}</strong>
-                    <p>{status === "optimizing" ? `Adaptive file solver · ${Math.round((offlineProgress?.fraction ?? 0) * 100)}% · testing carrier, gate, speed, and spacing hypotheses.` : active ? "Estimating carrier, noise floor, and mark/gap clusters. Ambiguous hand timing remains buffered." : "Arm the audio input, load a recording, or inject the internal reference signal."}</p>
+                    <strong>{status === "optimizing" ? (showDetails ? (offlineProgress?.detail ?? "SURVEYING CARRIER TRACKS").toUpperCase() : "ANALYZING RECORDING") : active ? "LISTENING FOR CW" : "READY FOR AUDIO"}</strong>
+                    <p>{status === "optimizing" ? (showDetails ? `Adaptive file solver · ${Math.round((offlineProgress?.fraction ?? 0) * 100)}% · testing carrier, gate, speed, and spacing hypotheses.` : `Multipass decode ${Math.round((offlineProgress?.fraction ?? 0) * 100)}% complete. Morsewave is testing tone and timing variations.`) : active ? (showDetails ? "Estimating carrier, noise floor, and mark/gap clusters. Ambiguous hand timing remains buffered." : "Automatic tone and timing lock is active. Decoded characters will appear here.") : "Open a recording or start the microphone. Carrier, speed, and hand-key timing are detected automatically."}</p>
                     {status === "optimizing" && <div className="optimizer-progress"><i style={{ width: `${Math.round((offlineProgress?.fraction ?? 0) * 100)}%` }} /></div>}
                   </div>
-                  {!active && <button onClick={() => void startDemo()}><Play size={14} fill="currentColor" /> Inject reference</button>}
+                  {!active && <button onClick={() => fileInputRef.current?.click()}><FileAudio size={14} /> Open recording</button>}
                 </div>
               )}
-              {offlineCandidateInterpretation && offlineResult && (
+              {showDetails && offlineCandidateInterpretation && offlineResult && (
                 <section className="multipass-candidate" aria-labelledby="multipass-candidate-title">
                   <div className="multipass-candidate-heading">
                     <span id="multipass-candidate-title">UNSELECTED MULTIPASS CANDIDATE</span>
@@ -619,7 +668,14 @@ export default function App() {
                   <em>Held out because the physical timing/validity convergence gate did not pass.</em>
                 </section>
               )}
-              {offlineResult && stationLanes.length > 0 && (
+              {!showDetails && offlineCandidateInterpretation && offlineResult && (
+                <details className="focused-disclosure">
+                  <summary>Possible alternate copy</summary>
+                  <p>{offlineResult.transcript}</p>
+                  <small>Held separately because the physical timing check was inconclusive.</small>
+                </details>
+              )}
+              {showDetails && offlineResult && stationLanes.length > 0 && (
                 <section
                   className="station-lanes"
                   aria-labelledby="station-lanes-title"
@@ -670,7 +726,7 @@ export default function App() {
                   </p>
                 </section>
               )}
-              {offlineResult?.neuralAdvisories?.length ? (
+              {showDetails && offlineResult?.neuralAdvisories?.length ? (
                 <section
                   className="station-lanes neural-lanes"
                   aria-labelledby="neural-lanes-title"
@@ -710,6 +766,12 @@ export default function App() {
                   </p>
                 </section>
               ) : null}
+              {!showDetails && alternateSignalCount > 0 && (
+                <button className="signal-details-link" onClick={() => setShowDetails(true)}>
+                  <SlidersHorizontal size={13} />
+                  {alternateSignalCount} additional {alternateSignalCount === 1 ? "signal" : "signals"} available in Signal details
+                </button>
+              )}
             </div>
             <div className="copy-footer">
               <span>{characters.length} characters</span>
@@ -717,32 +779,43 @@ export default function App() {
               <span>{wordCount} words</span>
               <i />
               <span>{formatDuration(elapsed)} elapsed</span>
-              {offlineResult && <span className="optimizer-summary">
+              {showDetails && offlineResult && <span className="optimizer-summary">
                 MULTIPASS {offlineResult.converged ? "LOCK" : "CANDIDATE"} · {offlineResult.passCount.toLocaleString()} hypotheses · {offlineResult.fundamentalHz && Math.abs(offlineResult.frequency - offlineResult.fundamentalHz) >= 55
                   ? `F0 ${Math.round(offlineResult.fundamentalHz)} Hz · decode ${Math.round(offlineResult.frequency)} Hz H${Math.max(2, Math.round(offlineResult.frequency / offlineResult.fundamentalHz))}`
                   : `${Math.round(offlineResult.frequency)} Hz`} · {Math.round(offlineResult.confidence * 100)}%
               </span>}
-              <span className="copy-quality"><Check size={13} /> Confidence shading is visible on uncertain copy</span>
+              {showDetails ? (
+                <span className="copy-quality"><Check size={13} /> Confidence shading is visible on uncertain copy</span>
+              ) : (
+                <span className="focused-copy-summary">
+                  <span>{signalLocked ? `${Math.round(detectedFrequency)} Hz carrier` : "Carrier seeking"}</span>
+                  <span>{estimatedWpm.toFixed(1)} WPM</span>
+                  <span>{characters.length ? `${Math.round(displayConfidence * 100)}% confidence` : "Auto timing"}</span>
+                </span>
+              )}
             </div>
           </Panel>
 
-          <Panel
-            eyebrow="IF analysis"
-            title="Narrow-band spectrum"
-            className="scope-panel"
-            action={<span className={`lock-badge ${signalLocked ? "is-locked" : ""}`}><i /> {trustedOfflineResult ? `Track ${trustedOfflineResult.channel + 1} selected` : signalLocked ? "Tone locked" : "Seeking"}</span>}
-          >
-            <SignalScope frame={frame} active={active} />
-            <div className="scope-readout">
-              <div><span>Tone</span><strong>{Math.round(detectedFrequency)}<small> Hz</small></strong></div>
-              <div><span>Noise floor</span><strong>{Math.round(frame?.metrics.noiseFloorDb ?? -78)}<small> dBFS</small></strong></div>
-              <div><span>Peak Δ</span><strong>{Math.round(frame?.prominenceDb ?? 0)}<small> dB</small></strong></div>
-              <div><span>Gate</span><strong className={frame?.metrics.gateOpen ? "accent" : ""}>{frame?.metrics.gateOpen ? "KEYED" : "QUIET"}</strong></div>
-            </div>
-          </Panel>
+          {showDetails && (
+            <Panel
+              eyebrow="IF analysis"
+              title="Narrow-band spectrum"
+              className="scope-panel"
+              action={<span className={`lock-badge ${signalLocked ? "is-locked" : ""}`}><i /> {trustedOfflineResult ? `Track ${trustedOfflineResult.channel + 1} selected` : signalLocked ? "Tone locked" : "Seeking"}</span>}
+            >
+              <SignalScope frame={frame} active={active} />
+              <div className="scope-readout">
+                <div><span>Tone</span><strong>{Math.round(detectedFrequency)}<small> Hz</small></strong></div>
+                <div><span>Noise floor</span><strong>{Math.round(frame?.metrics.noiseFloorDb ?? -78)}<small> dBFS</small></strong></div>
+                <div><span>Peak Δ</span><strong>{Math.round(frame?.prominenceDb ?? 0)}<small> dB</small></strong></div>
+                <div><span>Gate</span><strong className={frame?.metrics.gateOpen ? "accent" : ""}>{frame?.metrics.gateOpen ? "KEYED" : "QUIET"}</strong></div>
+              </div>
+            </Panel>
+          )}
         </div>
 
-        <section className="metric-strip" aria-label="Decoder metrics">
+        {showDetails && <>
+          <section className="metric-strip" aria-label="Decoder metrics">
           <div className="metric-card">
             <span className="metric-icon"><Activity size={16} /></span>
             <div><span>Signal / noise</span><strong>{signalSnr > 0 ? signalSnr.toFixed(1) : "—"}<small> dB</small></strong></div>
@@ -766,9 +839,9 @@ export default function App() {
             </strong></div>
             <em>{recoveredEdges ? `${recoveredEdges} edges repaired` : lastCharacter ? `${lastCharacter.value} · ${lastCharacter.pattern}` : "No event"}</em>
           </div>
-        </section>
+          </section>
 
-        <div className="secondary-grid">
+          <div className="secondary-grid">
           <Panel eyebrow="DSP configuration" title="Decoder matrix" className="controls-panel" action={<span className="dsp-badge">GOERTZEL / 1024·256</span>}>
             <div className="control-columns">
               <div className="control-group">
@@ -852,12 +925,15 @@ export default function App() {
               )}
             </div>
           </Panel>
-        </div>
+          </div>
+        </>}
       </main>
 
-      <footer className="app-footer">
+      <footer className={`app-footer ${showDetails ? "is-technical" : "is-focused"}`}>
         <span><ShieldCheck size={13} /> AUDIO PATH: LOCAL</span>
-        <span className="footer-center">INTL MORSE · IF 200–4000 HZ · GOERTZEL 1024/256 · 5–50 WPM</span>
+        <span className="footer-center">{showDetails
+          ? "INTL MORSE · IF 200–4000 HZ · GOERTZEL 1024/256 · 5–50 WPM"
+          : "AUTO CARRIER · ADAPTIVE WPM · HAND-KEY SOLVER"}</span>
         <button onClick={() => setShowHelp(true)}><Keyboard size={13} /> Shortcuts</button>
       </footer>
 
@@ -881,8 +957,8 @@ export default function App() {
             <p>Morsewave analyzes audio locally, locks onto the strongest CW tone, then learns the sender’s actual timing as they key.</p>
             <div className="help-steps">
               <div><b>1</b><span><strong>Choose a source</strong><small>Microphone, recording, or the built-in practice signal.</small></span></div>
-              <div><b>2</b><span><strong>Let tone lock settle</strong><small>A green “Tone locked” badge means the carrier stands above the noise.</small></span></div>
-              <div><b>3</b><span><strong>Fine-tune only if needed</strong><small>Raise sensitivity for weak CW; use manual frequency for crowded bands.</small></span></div>
+              <div><b>2</b><span><strong>Let automatic lock settle</strong><small>Carrier, speed, and confidence appear beneath the decoded copy.</small></span></div>
+              <div><b>3</b><span><strong>Inspect only when needed</strong><small>Open Signal details for the spectrum, station lanes, and manual DSP controls.</small></span></div>
             </div>
             <div className="shortcut-grid">
               <span><kbd>Space</kbd> Start / stop</span>
