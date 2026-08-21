@@ -50,6 +50,24 @@ function renderKeyedTone(
 }
 
 describe("offline multipass optimizer", () => {
+  it("keeps raw punctuation for scoring and annotates prosigns only in returned copy", () => {
+    const sampleRate = 12_000;
+    const samples = renderKeyedTone("CQ <BT> DE W1AW <AR> <SOS>", 20, 700, 0.42, sampleRate);
+    const result = optimizeMorseRecording([samples], sampleRate, {
+      wpmHint: 20,
+      languageAssist: true,
+      minimumFrequency: 650,
+      maximumFrequency: 750,
+    });
+
+    expect(result.rawTranscript).toBe("CQ = DE W1AW + <SOS>");
+    expect(result.transcript).toBe("CQ <BT> DE W1AW <AR> <SOS>");
+    expect(result.tokens.filter((token) => token.rawValue)).toEqual([
+      expect.objectContaining({ pattern: "-...-", rawValue: "=", value: "<BT>" }),
+      expect.objectContaining({ pattern: ".-.-.", rawValue: "+", value: "<AR>" }),
+    ]);
+  }, 10_000);
+
   it("selects the intended Morse track instead of a stronger simultaneous station", () => {
     const sampleRate = 12_000;
     const wanted = renderKeyedTone("CALLED TEST", 20, 300, 0.42, sampleRate);

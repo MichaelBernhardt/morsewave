@@ -480,7 +480,7 @@ export default function App() {
                     <span
                       key={token.id}
                       className={token.confidence < 0.55 ? "low-confidence" : ""}
-                      title={`${token.pattern} · ${Math.round(token.confidence * 100)}% confidence`}
+                      title={`${token.pattern}${token.rawValue ? ` · raw ${token.rawValue}` : ""} · ${Math.round(token.confidence * 100)}% confidence`}
                     >
                       {token.value}
                     </span>
@@ -603,9 +603,8 @@ export default function App() {
                 <Toggle
                   checked={settings.languageAssist}
                   onChange={(languageAssist) => setSettings((current) => ({ ...current, languageAssist }))}
-                  label="Language prior"
-                  description="Resolves tied spacing only"
-                  disabled={!settings.handKeyAssist}
+                  label="CW / ham prior"
+                  description="Prosigns, Q-signals & shorthand"
                 />
                 <div className="sensitivity-header"><span>Sensitivity</span><strong>{settings.sensitivity}%</strong></div>
                 <input

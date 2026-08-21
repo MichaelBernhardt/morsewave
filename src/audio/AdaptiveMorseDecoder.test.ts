@@ -100,6 +100,8 @@ function decodeTimingProfile(text: string, actualWpm: number, profile: {
 describe("AdaptiveMorseDecoder", () => {
   it("decodes canonical International Morse", () => {
     expect(decode("SOS TEST 123", 20).output).toBe("SOS TEST 123");
+    expect(decode("<SOS>", 20).output).toBe("<SOS>");
+    expect(decode("WII800", 20).output).toBe("WII800");
   });
 
   it("tolerates substantial keying jitter", () => {

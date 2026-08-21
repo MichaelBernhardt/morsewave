@@ -10,7 +10,7 @@ Morsewave is an open-source, private desktop CW/Morse decoder. It listens to a m
 - Learns keying speed and timing continuously from 5–50 WPM
 - Uses a 64-path timing beam to recover uneven hand-keying, short fades, bounce, and missing elements
 - Uses adaptive noise-floor, spectral-purity, hysteresis, and debounce gates, with deep-QSB reacquisition
-- Decodes International Morse letters, numerals, punctuation, and common prosigns
+- Decodes International Morse letters, numerals, punctuation, and common prosigns such as `<BT>`, `<AR>`, `<SK>`, `<KN>`, and `<SOS>`
 - Shows live spectrum history, SNR, tone prominence, WPM, gate state, and confidence
 - Accepts microphone input, drag-and-drop audio files, and a noisy built-in demo
 - Runs uploaded recordings through a local multipass solver that tests several carriers, channels, gates, speeds, and spacing models before selecting a consensus transcript
@@ -50,6 +50,8 @@ The local macOS build includes the microphone entitlement and is ad-hoc signed. 
 Audio enters an `AudioWorklet`, where an overlapping 1024-sample detector advances in 256-sample hops. A 4096-sample rolling window scans the CW passband for a credible carrier and holds that carrier through key-up intervals. The stateful decoder then applies a two-sided adaptive gate, edge debounce, robust speed estimation, and a bounded timing beam before International Morse lookup. Only throttled measurements and decoded characters reach React for display.
 
 Uploaded recordings additionally take a file-only optimization path before playback. A worker resamples one or two channels to 12 kHz, surveys multiple independent carrier tracks, refines their frequencies, and extracts coherent 24 ms envelopes. It reuses those envelopes across thousands of bounded gate, timing, speed, and spacing hypotheses; ranks them by Morse timing, validity, speed, message completeness, and language evidence; then combines credible passes into a timestamped consensus. Compressed 3.4–7.4-unit hand-keyed word gaps are evaluated as competing hypotheses when language assistance is enabled. A separate decoder-quality guard prevents a long noise track from winning on text shape alone. The live microphone path remains low-latency and does not wait for this search.
+
+The optional **CW / ham prior** recognizes standard Q-signals, common amateur abbreviations, callsign shapes, and run-together procedural signs. It is a bounded tie-breaker: physical Morse timing remains authoritative. In displayed copy, ambiguous groups use common radio notation—for example, `-...-` is shown as `<BT>` while its raw International Morse value remains `=`. Disable the prior to retain generic punctuation notation.
 
 The timing decoder is intentionally independent of browser APIs. Its test suite covers canonical copy, randomized and systematic novice timing errors, key bounce, deep fades, stuck carriers, weak signals, speed-harmonic ambiguity, and the full configured 5–50 WPM range.
 

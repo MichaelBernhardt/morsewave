@@ -1,4 +1,5 @@
-import { decodeMorse, isMorseCharacter, isMorsePrefix } from "./morse";
+import { annotateMorseValue, decodeMorse, isMorseCharacter, isMorsePrefix } from "./morse";
+import { HAM_CW_TERMS, isHamCwScoringTerm } from "./hamVocabulary";
 
 export interface DecoderConfig {
   sensitivity: number;
@@ -18,6 +19,7 @@ export interface SignalSample {
 
 export interface DecodedCharacter {
   value: string;
+  rawValue?: string;
   pattern: string;
   confidence: number;
   timestamp: number;
@@ -339,8 +341,8 @@ export class AdaptiveMorseDecoder {
       }
     }
 
-    // More than eight elements is not a valid International Morse character.
-    if (this.currentPattern.length > 8) {
+    // SOS is a nine-element run-together procedural signal.
+    if (this.currentPattern.length > 9) {
       this.emitCharacter(this.lastTimestamp);
     }
   }
@@ -379,7 +381,7 @@ export class AdaptiveMorseDecoder {
     const confidence = this.currentConfidence.length
       ? this.currentConfidence.reduce((sum, value) => sum + value, 0) / this.currentConfidence.length
       : 0;
-    this.callbacks.onCharacter?.({
+    this.emitOutputCharacter({
       value: decodeMorse(this.currentPattern),
       pattern: this.currentPattern,
       confidence,
@@ -537,7 +539,10 @@ export class AdaptiveMorseDecoder {
       "TH HE IN ER AN RE ON AT EN ND TI ES OR TE OF ED IS IT AL AR ST TO NT NG SE HA AS OU IO LE VE CO ME DE HI RI RO IC NE EA RA CE LI CH LL BE MA SI OM UR WI WA AV EG GI NN FI BA AD RS MO CW CQ QR QL QU BR OW FO OX LA AZ KE EY LP PY CA YE RD DA AY SO UN GR AP PP VY IM GL".split(" "),
     );
     const commonWords = new Set(
-      "A I THE AND OF TO IN IS IT THIS THAT FOR FROM WITH ON AT BY AS BE OR ARE WAS WERE YOU YOUR MY ME WE OUR THEY HE SHE NAME CALL CALLED CALLING RADIO CW MORSE CODE SIGNAL COPY AGAIN PLEASE PSE THANKS TNX GOOD GREAT BAD FIST TEST NOW WPM TRANSITION FILE FOLLOWS WEATHER ANTENNA POWER RIG STATION OPERATOR MORNING AFTERNOON EVENING YESTERDAY SOUNDED HAPPY VERY HELLO HI ES VY IM GL".split(" "),
+      [
+        ..."A I THE AND OF TO IN IS IT THIS THAT FOR FROM WITH ON AT BY AS BE OR ARE WAS WERE YOU YOUR MY ME WE OUR THEY HE SHE NAME CALL CALLED CALLING RADIO CW MORSE CODE SIGNAL COPY AGAIN PLEASE PSE THANKS TNX GOOD GREAT BAD FIST TEST NOW WPM TRANSITION FILE FOLLOWS WEATHER ANTENNA POWER RIG STATION OPERATOR MORNING AFTERNOON EVENING YESTERDAY SOUNDED HAPPY VERY HELLO HI ES VY IM GL CQ DE QRZ QSO QTH RST K KN AR SK R".split(" "),
+        ...[...HAM_CW_TERMS].filter((term) => isHamCwScoringTerm(term)),
+      ],
     );
     const currentWord = (characters: BeamCharacter[], trailingValue = "") => {
       const values = characters.map((character) => character.value);
@@ -560,13 +565,21 @@ export class AdaptiveMorseDecoder {
     const wordBoundaryPenalty = (value: string, characters: BeamCharacter[]) => {
       if (!this.config.languageAssist) return 0;
       const word = currentWord(characters, value);
+      // Single-letter operational signals are too ambiguous inside ordinary
+      // words (C in CQ, T in TEST). Preserve the proven A/I/K/R handling and
+      // apply the stronger ham prior only once a multi-letter marker exists.
+      if (word.length === 1 && !/^[AIKR]$/.test(word)) return 0.85;
       if (/^(CQ|DE|QRZ|QSO|QTH|RST|TEST|K|KN|AR|SK|R)$/.test(word)) return -1.35;
+      if (isHamCwScoringTerm(word)) return -1;
       if (/^[A-Z]{1,2}\d[A-Z0-9]{1,4}(?:\/[A-Z0-9]+)?$/.test(word)) return -0.35;
       if (commonWords.has(word)) return -0.85;
       if (word.length === 1) return /^[AIKR]$/.test(word) ? 0.15 : 0.85;
       if (/\d/.test(word)) return 0.1;
       return word.length === 2 ? 0.12 : 0;
     };
+    const patternFitsState = (pattern: string, characters: BeamCharacter[]) =>
+      pattern.length <= 8 || (pattern === "...---..." &&
+        (characters.length === 0 || characters.at(-1)?.value === " "));
     let beam: BeamState[] = [];
 
     for (let index = 0; index < this.fuzzyMarks.length; index += 1) {
@@ -590,7 +603,7 @@ export class AdaptiveMorseDecoder {
       for (const state of beam) {
         for (const option of options) {
           const joinedPattern = state.pattern + option.symbol;
-          if (joinedPattern.length <= 8 && isMorsePrefix(joinedPattern)) {
+          if (patternFitsState(joinedPattern, state.characters) && isMorsePrefix(joinedPattern)) {
             next.push({
               characters: state.characters,
               pattern: joinedPattern,
@@ -610,8 +623,10 @@ export class AdaptiveMorseDecoder {
             ];
             for (const missing of missingOptions) {
               const repairedPattern = state.pattern + missing.symbol + option.symbol;
-              if (repairedPattern.length <= 8 && isMorsePrefix(repairedPattern)) {
-                const repairedValue = isMorseCharacter(repairedPattern) ? decodeMorse(repairedPattern) : "";
+              if (patternFitsState(repairedPattern, state.characters) && isMorsePrefix(repairedPattern)) {
+                const repairedValue = isMorseCharacter(repairedPattern)
+                  ? decodeMorse(repairedPattern)
+                  : "";
                 const expectedCallsignDigit = previousWord(state.characters) === "DE" &&
                   /^[A-Z]{1,2}$/.test(currentWord(state.characters)) && /^\d$/.test(repairedValue);
                 next.push({
@@ -708,7 +723,7 @@ export class AdaptiveMorseDecoder {
     while (this.fuzzyEmittedCount < common) {
       const character = best.characters[this.fuzzyEmittedCount];
       if (character.value === " ") this.callbacks.onWordGap?.(timestamp);
-      else this.callbacks.onCharacter?.({ ...character, timestamp });
+      else this.emitOutputCharacter({ ...character, timestamp });
       this.fuzzyEmittedCount += 1;
       this.hasOutput = true;
     }
@@ -723,7 +738,7 @@ export class AdaptiveMorseDecoder {
       while (this.fuzzyEmittedCount < best.characters.length) {
         const character = best.characters[this.fuzzyEmittedCount];
         if (character.value === " ") this.callbacks.onWordGap?.(timestamp);
-        else this.callbacks.onCharacter?.({ ...character, timestamp });
+        else this.emitOutputCharacter({ ...character, timestamp });
         this.fuzzyEmittedCount += 1;
         this.hasOutput = true;
       }
@@ -737,6 +752,19 @@ export class AdaptiveMorseDecoder {
     this.fuzzyEmittedCount = 0;
     this.fuzzyPreviewPattern = "";
     this.mergeDropoutGap = null;
+  }
+
+  private emitOutputCharacter(character: DecodedCharacter) {
+    const value = annotateMorseValue(
+      character.pattern,
+      character.value,
+      Boolean(this.config.languageAssist),
+    );
+    this.callbacks.onCharacter?.({
+      ...character,
+      value,
+      ...(value !== character.value ? { rawValue: character.value } : {}),
+    });
   }
 
   private makeMetrics(levelDb: number, thresholdDb: number): DecoderMetrics {

@@ -1,4 +1,5 @@
-import { decodeMorse, isMorseCharacter } from "../morse";
+import { annotateMorseValue, decodeMorse, isMorseCharacter } from "../morse";
+import { HAM_CW_TERMS, isHamCwScoringTerm } from "../hamVocabulary";
 
 export interface OfflineDecodeOptions {
   wpmHint: number;
@@ -15,6 +16,7 @@ export interface OfflineDecodeProgress {
 
 export interface OfflineDecodeToken {
   value: string;
+  rawValue?: string;
   pattern: string;
   confidence: number;
   timestamp: number;
@@ -32,12 +34,16 @@ export interface OfflineDecodeCandidate {
   languageQuality: number;
   messageQuality: number;
   decoderScore: number;
+  /** Literal decoder copy used for hypothesis scoring, before display aliases. */
   transcript: string;
   thresholdDb?: number;
 }
 
 export interface OfflineDecodeResult {
+  /** User-facing copy, including enabled prosign notation. */
   transcript: string;
+  /** Literal International Morse lookup used for scoring and convergence. */
+  rawTranscript: string;
   tokens: OfflineDecodeToken[];
   frequency: number;
   channel: number;
@@ -120,7 +126,10 @@ const COMMON_BIGRAMS = new Set(
 );
 
 const COMMON_WORDS = new Set(
-  "A I THE AND OF TO IN IS IT THIS THAT FOR FROM WITH ON AT BY AS BE OR ARE WAS WERE YOU YOUR MY ME WE OUR THEY HE SHE NAME CALL CALLED CALLING RADIO CW MORSE CODE SIGNAL COPY AGAIN PLEASE PSE THANKS TNX GOOD GREAT BAD FIST TEST NOW WPM TRANSITION FILE FOLLOWS WEATHER ANTENNA POWER RIG STATION OPERATOR MORNING AFTERNOON EVENING YESTERDAY SOUNDED HAPPY VERY HELLO HI ABOUT AFTER ALL ALSO BACK BEEN BEFORE BEST BOTH BUT CAN COME DAY DID DO DOWN EACH FIRST FUN GET GIVE GO HAD HAS HAVE HERE HOW INTO JUST KNOW LIKE LITTLE LOCAL LONG LOOK MADE MAKE MORE MOST MUCH NEW NO NOT ONLY OTHER OUT OVER PEOPLE RIGHT SAID SEE SOME SUM TAKE THAN THEM THEN THERE THESE TIME TWO UP USE VIDEO WAY WELL WHAT WHEN WHERE WHICH WHO WILL WORK WOULD YES ES VY ESVY IM GL CQ DE QRZ QSO QTH RST CLUB K KN AR SK R".split(" "),
+  [
+    ..."A I THE AND OF TO IN IS IT THIS THAT FOR FROM WITH ON AT BY AS BE OR ARE WAS WERE YOU YOUR MY ME WE OUR THEY HE SHE NAME CALL CALLED CALLING RADIO CW MORSE CODE SIGNAL COPY AGAIN PLEASE PSE THANKS TNX GOOD GREAT BAD FIST TEST NOW WPM TRANSITION FILE FOLLOWS WEATHER ANTENNA POWER RIG STATION OPERATOR MORNING AFTERNOON EVENING YESTERDAY SOUNDED HAPPY VERY HELLO HI ABOUT AFTER ALL ALSO BACK BEEN BEFORE BEST BOTH BUT CAN COME DAY DID DO DOWN EACH FIRST FUN GET GIVE GO HAD HAS HAVE HERE HOW INTO JUST KNOW LIKE LITTLE LIVE LOCAL LONG LOOK MADE MAKE MORE MOST MUCH NEW NO NOT ONLY OTHER OUT OVER PEOPLE PROBLEM RIGHT SAID SEE SOME SUM TAKE THAN THEM THEN THERE THESE TIME TWO UP USE VIDEO WAY WELL WHAT WHEN WHERE WHICH WHO WILL WORK WOULD YES ES VY ESVY IM GL CQ DE QRZ QSO QTH RST CLUB K KN AR SK R".split(" "),
+    ...[...HAM_CW_TERMS].filter((term) => isHamCwScoringTerm(term)),
+  ],
 );
 
 function makeHann(size: number) {
@@ -414,6 +423,7 @@ function languageQuality(transcript: string) {
   let implausibleDigits = 0;
   for (const word of words) {
     if (COMMON_WORDS.has(word)) wordPoints += 1;
+    else if (isHamCwScoringTerm(word)) wordPoints += 1.05;
     else if (/^[A-Z]{1,2}\d[A-Z0-9]{1,5}(?:\/[A-Z0-9]+)?$/.test(word)) wordPoints += 0.8;
     else {
       implausibleDigits += (word.match(/\d/g) ?? []).length;
@@ -469,6 +479,7 @@ function wordTokens(tokens: OfflineDecodeToken[]) {
 
 function wordPlausibility(word: string) {
   if (COMMON_WORDS.has(word)) return 2.4;
+  if (isHamCwScoringTerm(word)) return 2.5;
   if (/^[A-Z]{1,2}\d[A-Z0-9]{1,5}(?:\/[A-Z0-9]+)?$/.test(word)) return 1.8;
   if (/[�]/.test(word)) return -2;
   if (/\d/.test(word)) return -0.8;
@@ -643,7 +654,13 @@ function decodeRuns(
     patternConfidence.push(clamp(1 - Math.min(dotError, dashError) * 0.72, 0.25, 0.99));
     const gap = runs[index + 1];
     const gapDuration = gap && !gap.keyed ? gap.endMs - gap.startMs : Infinity;
-    if (gapDuration >= unitMs * characterUnits || pattern.length >= 8) {
+    // A continuous SOS is the sole nine-element signal. Only let an eight-mark
+    // prefix absorb a ninth element when it starts a message or follows an
+    // actual word boundary; this prevents clipped callsigns such as WII800
+    // from collapsing into a false distress marker.
+    const standaloneSosPrefix = pattern === "...---.." &&
+      (tokens.length === 0 || Boolean(tokens.at(-1)?.space));
+    if (gapDuration >= unitMs * characterUnits || pattern.length >= 8 && !standaloneSosPrefix) {
       emit(run.endMs);
       if (gapDuration >= unitMs * wordUnits && tokens.length && !tokens.at(-1)?.space) {
         tokens.push({ value: " ", pattern: "/", confidence: 0.96, timestamp: run.endMs, space: true });
@@ -868,10 +885,18 @@ export function optimizeMorseRecording(
   const converged = winner.hypothesis.score >= 0.75 &&
     winner.hypothesis.decoderScore >= 0.7 &&
     winner.hypothesis.validRatio >= 0.96 && confidence >= 0.78;
+  const rawTranscript = winner.hypothesis.transcript;
+  const tokens = winner.hypothesis.tokens.map((token) => {
+    if (token.space) return token;
+    const value = annotateMorseValue(token.pattern, token.value, options.languageAssist);
+    return value === token.value ? token : { ...token, value, rawValue: token.value };
+  });
+  const transcript = tokens.map((token) => token.value).join("");
   onProgress?.({ phase: "complete", fraction: 1, detail: "Selected the strongest Morse hypothesis" });
   return {
-    transcript: winner.hypothesis.transcript,
-    tokens: winner.hypothesis.tokens,
+    transcript,
+    rawTranscript,
+    tokens,
     frequency: winner.candidate.frequency,
     channel: winner.candidate.channel,
     wpm: winner.hypothesis.wpm,
