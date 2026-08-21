@@ -16,6 +16,8 @@ Morsewave is an open-source, private desktop CW/Morse decoder. It listens to a m
 - Accepts microphone input, drag-and-drop audio files, and a noisy built-in demo
 - Runs uploaded recordings through a local multipass solver that tests several carriers, channels, gates, speeds, and spacing models before selecting a consensus transcript
 - Separates simultaneous keyed stations, rewards sustained readable-message evidence, and searches compressed beginner word gaps without altering the transmitted Morse characters
+- Shows each credible carrier as an independent station lane instead of merging simultaneous operators
+- Runs a pinned CWformer v0.2.0 INT8 model as a second, visibly non-authoritative reading of credible file-only lanes
 - Copies or exports session transcripts with uncertain characters highlighted
 - Persists decoder preferences and supports dark/light appearances
 - Processes audio locally; there is no server, analytics client, or network upload
@@ -52,6 +54,10 @@ Audio enters an `AudioWorklet`, where an overlapping 1024-sample detector advanc
 
 Uploaded recordings additionally take a file-only optimization path before playback. A worker resamples one or two channels to 12 kHz, surveys multiple independent carrier tracks, refines their frequencies, and extracts coherent 24 ms envelopes. It reuses those envelopes across thousands of bounded gate, timing, speed, and spacing hypotheses; ranks them by Morse timing, validity, speed, message completeness, and language evidence; then combines credible passes into a timestamped consensus. Weak or inconsistent tracks automatically receive two additional high-threshold recovery bands, while clean tracks stop after the normal sweep. Recovery passes carry a reliability cost so they must win decisively rather than displace clean copy by a marginal score.
 
+After the classical solver has found a physically credible carrier, the desktop file path can also run a local [CWformer v0.2.0](https://github.com/parsimo2010/CWformer/releases/tag/v0.2.0) INT8 model through single-threaded ONNX Runtime Web WASM. Each candidate channel/carrier is isolated independently, translated to the model's 700 Hz center, and resampled to 16 kHz. Its model copy is displayed in a separate **NON-AUTH** lane and is never allowed to change or merge the classical transcript, carrier, WPM, confidence, playback channel, or convergence decision. Missing assets, an unsupported runtime, or an integrity failure simply returns the unchanged classical result. ONNX runs in a disposable child worker that the classical optimizer hard-terminates at 60 seconds, so even a stuck WASM runtime cannot withhold the completed classical copy. Neural analysis is limited to recordings of three minutes or less, at most two carrier lanes, and 180 seconds of total lane audio.
+
+The model, mel tables, and WASM runtime are pinned and bundled with the app. Inference performs no network request or upload. They add about 39 MB to the uncompressed application assets; their upstream licenses and exact model hash are recorded in [`public/THIRD_PARTY_NOTICES.txt`](public/THIRD_PARTY_NOTICES.txt).
+
 Compressed 3.4–7.4-unit hand-keyed word gaps are evaluated as competing hypotheses when language assistance is enabled. A separate decoder-quality guard prevents a long noise track from winning on text shape alone. If contextual Multipass copy looks useful but fails that physical guard, the app can expose it as an explicitly unselected candidate while the safer streaming decoder remains active. The live microphone path remains low-latency and does not wait for this search.
 
 The optional **CW / ham prior** recognizes standard Q-signals, common amateur abbreviations, callsign shapes, and run-together procedural signs. Multipass also reads coherent operating sequences—such as `CQ … DE <callsign>` or `UR RST 5NN`—as a capped tie-breaker between otherwise credible physical hypotheses. That lexical hint cannot satisfy the independent signal/timing convergence gate. The received copy remains untouched; a separate, visibly non-authoritative operator aid expands exact markers such as `5NN` to `599` while preserving callsigns and unknown words.
@@ -62,7 +68,7 @@ The timing decoder is intentionally independent of browser APIs. Its test suite 
 
 ## Real-recording corpus
 
-The reproducible benchmark manifest includes official W1AW exact-answer audio plus licensed off-air captures with QSB, interference, static, clipped characters, competing carriers, and dirty-key chatter. It also includes a 1890 wax-cylinder hand-key recording, deeply notched Canadian amateur CW, and the CC0 SS Marine Electric distress recording. Audio is fetched into an ignored cache so provenance and license terms stay explicit without vendoring recordings.
+The reproducible benchmark manifest includes official W1AW exact-answer audio plus sourced off-air captures with QSB, interference, static, clipped characters, competing carriers, and dirty-key chatter. It also includes a 1890 wax-cylinder hand-key recording, deeply notched Canadian amateur CW, and the CC0 SS Marine Electric distress recording. Audio is fetched into an ignored cache so provenance and each source's license or usage terms stay explicit without vendoring recordings.
 
 ```bash
 npm run corpus:fetch -- arrl-w1aw-18wpm f5lpy-off-air
@@ -89,4 +95,4 @@ Issues and pull requests are welcome, especially reproducible recordings that ex
 
 ## License
 
-Morsewave is available under the [MIT License](LICENSE). Corpus recordings retain the separate licenses recorded in `test-corpus/manifest.json` and are not part of the source distribution.
+Morsewave is available under the [MIT License](LICENSE). Bundled neural components retain the licenses in [`public/THIRD_PARTY_NOTICES.txt`](public/THIRD_PARTY_NOTICES.txt). Corpus recordings retain the separate licenses recorded in `test-corpus/manifest.json` and are not part of the source distribution.

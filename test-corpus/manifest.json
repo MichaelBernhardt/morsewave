@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "samples": [
     {
       "id": "arrl-w1aw-18wpm",
@@ -11,7 +11,22 @@
       "license": "ARRL site terms; local evaluation only, do not redistribute",
       "segment": { "start": 0, "duration": 25 },
       "knownCopy": "= NOW 18 WPM TRANSITION FILE FOLLOWS =",
-      "class": "exact ground truth; shaped 750 Hz keyed audio"
+      "class": "exact ground truth; shaped 750 Hz keyed audio",
+      "expect": {
+        "reference": "= NOW 18 WPM TRANSITION FILE FOLLOWS =",
+        "anchors": ["18 WPM TRANSITION", "FILE FOLLOWS"],
+        "keywords": ["NOW", "TRANSITION", "FOLLOWS"],
+        "carrierHz": { "target": 750, "tolerance": 15 },
+        "wpm": { "target": 18, "tolerance": 2 },
+        "converged": true,
+        "limits": {
+          "maxCer": 0,
+          "maxWer": 0,
+          "minBoundaryF1": 1,
+          "minAnchorRecall": 1,
+          "minKeywordRecall": 1
+        }
+      }
     },
     {
       "id": "f5lpy-off-air",
@@ -22,7 +37,15 @@
       "license": "CC BY 4.0; attribution: klankbeeld",
       "segment": { "start": 0, "duration": 30 },
       "knownCopy": "CQ CQ CQ CQ DE F5LPY (repeated; capture starts mid-cycle)",
-      "class": "real HF path, QSB, interference, uneven spacing"
+      "class": "real HF path, QSB, interference, uneven spacing",
+      "expect": {
+        "anchors": ["F5LPY F5LPY", "CQ CQ"],
+        "keywords": ["F5LPY", "CQ"],
+        "carrierHz": { "target": 1360, "tolerance": 50 },
+        "wpm": { "target": 23, "tolerance": 4 },
+        "converged": true,
+        "limits": { "minAnchorRecall": 1, "minKeywordRecall": 1 }
+      }
     },
     {
       "id": "wii800-static",
@@ -33,7 +56,14 @@
       "license": "CC BY 4.0; attribution: ERH",
       "segment": { "start": 0, "duration": 4.873 },
       "knownCopy": "WII800 (the initial W begins before the usable keyed audio; audible suffix II800)",
-      "class": "real radio static, tuning transient, clipped initial character"
+      "class": "real radio static, tuning transient, clipped initial character",
+      "expect": {
+        "anchors": ["WII800"],
+        "carrierHz": { "target": 646, "tolerance": 50 },
+        "wpm": { "target": 27, "tolerance": 5 },
+        "converged": false,
+        "limits": { "minAnchorRecall": 1 }
+      }
     },
     {
       "id": "noisy-40m",
@@ -44,7 +74,11 @@
       "license": "CC0 1.0",
       "segment": { "start": 0, "duration": 23.838 },
       "knownCopy": null,
-      "class": "very low SNR, wideband receiver noise, carrier near 4 kHz"
+      "class": "very low SNR, wideband receiver noise, carrier near 4 kHz",
+      "expect": {
+        "carrierHz": { "min": 3600, "max": 4000 },
+        "converged": false
+      }
     },
     {
       "id": "w1aw-tri-band",
@@ -54,8 +88,16 @@
       "file": "w1aw-tri-band.mp3",
       "license": "CC0 1.0",
       "segment": { "start": 0, "duration": 45 },
-      "knownCopy": "W1AW 18 WPM bulletin; three synchronized carriers",
-      "class": "three competing pitches, transatlantic QSB, static crashes, digital interference"
+      "knownCopy": "W1AW 18 WPM bulletin; the opening segment includes THE 45 DAY FORECAST IS UPDATED DAILY",
+      "class": "stereo diversity reception of synchronized HF paths, transatlantic QSB, static crashes and digital interference",
+      "expect": {
+        "anchors": ["45 DAY FORECAST"],
+        "keywords": ["FORECAST"],
+        "carrierHz": { "target": 1001, "tolerance": 40 },
+        "wpm": { "target": 18, "tolerance": 3 },
+        "converged": true,
+        "limits": { "minAnchorRecall": 1, "minKeywordRecall": 1 }
+      }
     },
     {
       "id": "dirty-contact",
@@ -66,7 +108,13 @@
       "license": "CC0 1.0",
       "segment": { "start": 145, "duration": 35 },
       "knownCopy": "VVVV [error] VG2G [error] VG2G DE KSFI K QTC K",
-      "class": "dual receivers, static, contact chatter, real transmitter fault"
+      "class": "dual receivers, static, contact chatter, real transmitter fault",
+      "expect": {
+        "anchors": ["VG2G", "KSFI", "QTC"],
+        "keywords": ["VG2G", "KSFI", "QTC"],
+        "converged": false,
+        "limits": { "minAnchorRecall": 0.66, "minKeywordRecall": 0.66 }
+      }
     },
     {
       "id": "ucsb-1890-cylinder",
@@ -77,7 +125,14 @@
       "license": "CC BY-NC; attribution: University of California, Santa Barbara Library; evaluation only",
       "segment": { "start": 0, "duration": 139.35 },
       "knownCopy": "BOUNDS DEPENDS UPON SEVERAL CONCRETE FACTORS NOT THE LEAST OF",
-      "class": "historic hand key, extreme timing distortion, cylinder wow/flutter, surface noise, approximately 5 WPM"
+      "class": "historic hand key, extreme timing distortion, cylinder wow/flutter, surface noise, approximately 5 WPM",
+      "expect": {
+        "anchors": ["BOUNDS DEPENDS", "CONCRETE FACTORS", "NOT THE LEAST OF"],
+        "keywords": ["BOUNDS", "DEPENDS", "CONCRETE", "FACTORS"],
+        "wpm": { "target": 5, "tolerance": 2 },
+        "converged": false,
+        "limits": { "minAnchorRecall": 0.66, "minKeywordRecall": 0.75 }
+      }
     },
     {
       "id": "marine-electric-sos",
@@ -89,7 +144,13 @@
       "license": "CC0 1.0",
       "segment": { "start": 600, "duration": 60 },
       "knownCopy": "Full line-by-line transcript is supplied separately; benchmark segment is intentionally dominated by QRM and competing carriers",
-      "class": "real 500 kHz distress traffic, multiple stations, severe QRM, tuners, fades, auto-alarm and steady heterodynes"
+      "class": "real 500 kHz distress traffic, multiple stations, severe QRM, tuners, fades, auto-alarm and steady heterodynes",
+      "expect": {
+        "anchors": ["SOS SOS", "WOOH"],
+        "keywords": ["SOS", "WOOH", "DE"],
+        "converged": false,
+        "limits": { "minAnchorRecall": 0.5, "minKeywordRecall": 0.66 }
+      }
     },
     {
       "id": "cj3a-deep-notches",
@@ -100,7 +161,403 @@
       "license": "CC0 1.0",
       "segment": { "start": 0, "duration": 22.375 },
       "knownCopy": "CJ3A calling CQ (repeated)",
-      "class": "slow off-air CW with deep RF/audio notches that split marks into false edges"
+      "class": "slow off-air CW with deep RF/audio notches that split marks into false edges",
+      "expect": {
+        "anchors": ["CJ3A", "CQ CQ"],
+        "keywords": ["CJ3A", "CQ", "DE"],
+        "carrierHz": { "target": 566, "tolerance": 45 },
+        "wpm": { "target": 28, "tolerance": 6 },
+        "converged": false,
+        "limits": { "minAnchorRecall": 1, "minKeywordRecall": 1 }
+      }
+    },
+    {
+      "id": "cwops-cwt-qso",
+      "title": "CWops CWT contest QSO",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:CWopsCWTcontestQSO.ogg",
+      "audioUrl": "https://upload.wikimedia.org/wikipedia/commons/b/bd/CWopsCWTcontestQSO.ogg",
+      "file": "cwops-cwt-qso.ogg",
+      "license": "Public domain; author: Ke5frf",
+      "segment": { "start": 0, "duration": 61.82 },
+      "knownCopy": "CWT contest exchange including KC4D and KE5FRF",
+      "class": "real contest QSO; wanted carrier has a strong correlated high-frequency harmonic",
+      "expect": {
+        "anchors": ["CWT", "KC4D", "KE5FRF"],
+        "keywords": ["CWT", "KC4D", "KE5FRF"],
+        "carrierHz": { "target": 706, "tolerance": 30 },
+        "wpm": { "target": 27, "tolerance": 4 },
+        "converged": false,
+        "limits": { "minAnchorRecall": 0.66, "minKeywordRecall": 0.66 }
+      }
+    },
+    {
+      "id": "ncdxf-beacons",
+      "title": "NCDXF synchronized HF beacons OH2B and CS3B",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:NCDXF_beacons.ogg",
+      "audioUrl": "https://upload.wikimedia.org/wikipedia/commons/9/95/NCDXF_beacons.ogg",
+      "file": "ncdxf-beacons.ogg",
+      "license": "CC0 1.0; author: Cqdx",
+      "segment": { "start": 0, "duration": 20 },
+      "knownCopy": "OH2B CS3B",
+      "class": "real synchronized beacons; short identifiers followed by stepped-power carriers",
+      "expect": {
+        "anchors": ["OH2B", "CS3B"],
+        "keywords": ["OH2B", "CS3B"],
+        "carrierHz": { "target": 534, "tolerance": 30 },
+        "wpm": { "target": 22, "tolerance": 3 },
+        "converged": false,
+        "limits": { "minAnchorRecall": 1, "minKeywordRecall": 1 }
+      }
+    },
+    {
+      "id": "heb-pactor-cw",
+      "title": "HEB PACTOR channel with repeated CW identification",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:HEB_Pactor_CW.ogg",
+      "audioUrl": "https://upload.wikimedia.org/wikipedia/commons/6/66/HEB_Pactor_CW.ogg",
+      "file": "heb-pactor-cw.ogg",
+      "license": "CC BY-SA 3.0; author: Cqdx",
+      "segment": { "start": 0, "duration": 28.865 },
+      "knownCopy": "CQ DE HEB (repeated)",
+      "class": "real maritime/coastal channel identification mixed with PACTOR data",
+      "expect": {
+        "anchors": ["CQ DE HEB"],
+        "keywords": ["CQ", "DE", "HEB"],
+        "carrierHz": { "target": 1525, "tolerance": 40 },
+        "wpm": { "target": 19.7, "tolerance": 3 },
+        "converged": true,
+        "limits": { "minAnchorRecall": 1, "minKeywordRecall": 1 }
+      }
+    },
+    {
+      "id": "ndb-gla",
+      "title": "Gland non-directional beacon GLA",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:NDB_Gland_GLA.ogg",
+      "audioUrl": "https://upload.wikimedia.org/wikipedia/commons/e/e6/NDB_Gland_GLA.ogg",
+      "file": "ndb-gla.ogg",
+      "license": "CC0 1.0; author: HBD20",
+      "segment": { "start": 0, "duration": 5.017 },
+      "knownCopy": "GLA",
+      "class": "very short real aeronautical NDB identifier; false-convergence guard",
+      "expect": {
+        "reference": "GLA",
+        "keywords": ["GLA"],
+        "carrierHz": { "target": 405, "tolerance": 25 },
+        "wpm": { "target": 9.76, "tolerance": 2 },
+        "converged": false,
+        "limits": { "maxCer": 0, "maxWer": 0, "minKeywordRecall": 1 }
+      }
+    },
+    {
+      "id": "ndb-wg",
+      "title": "Winnipeg non-directional beacon WG",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:NonDirectional_Beacon_WG.ogg",
+      "audioUrl": "https://upload.wikimedia.org/wikipedia/commons/b/b1/NonDirectional_Beacon_WG.ogg",
+      "file": "ndb-wg.ogg",
+      "license": "CC BY-SA 4.0; author: Wtshymanski",
+      "segment": { "start": 0, "duration": 12.143 },
+      "knownCopy": "WG (keying is active only around 6.7-9.5 seconds)",
+      "class": "late-active real aeronautical NDB after a long continuous carrier",
+      "expect": {
+        "reference": "WG",
+        "keywords": ["WG"],
+        "carrierHz": { "target": 412, "tolerance": 25 },
+        "wpm": { "target": 9.16, "tolerance": 2 },
+        "converged": false,
+        "limits": { "maxCer": 0, "maxWer": 0, "minKeywordRecall": 1 }
+      }
+    },
+    {
+      "id": "dk0wcy-fast",
+      "title": "DK0WCY space-weather beacon at live speed",
+      "sourcePage": "https://old.uba.be/fr/accueil/cw/cw-air-et-ailleurs",
+      "audioUrl": "https://old.uba.be/sites/default/files/media/cw/ubacw_dk0wcy_fast.mp3",
+      "transcriptUrl": "https://old.uba.be/sites/default/files/uploads/cw/ubacw_dk0wcy.txt",
+      "file": "dk0wcy-fast.mp3",
+      "license": "UBA site terms; local evaluation only, do not redistribute",
+      "segment": { "start": 0, "duration": 60 },
+      "knownCopy": "DK0WCY BEACON INFO 30 MAR 15 UTC KIEL K 4 4 = FORECASTS 30 MAR",
+      "class": "real HF beacon through receiver audio; exact bulletin text, fading and noise",
+      "expect": {
+        "anchors": ["DK0WCY BEACON", "INFO 30 MAR 15 UTC", "KIEL K 4 4", "FORECASTS 30 MAR"],
+        "keywords": ["DK0WCY", "BEACON", "KIEL", "FORECASTS"],
+        "carrierHz": { "target": 551, "tolerance": 30 },
+        "wpm": { "target": 16, "tolerance": 3 },
+        "converged": false,
+        "limits": { "minAnchorRecall": 0.75, "minKeywordRecall": 0.75 }
+      }
+    },
+    {
+      "id": "wae-jh3aiu-qtc",
+      "title": "JH3AIU Worked All Europe CW QTC run",
+      "sourcePage": "https://dl1mgb.com/thisthat/wae.php",
+      "audioUrl": "https://dl1mgb.com/thisthat/wae/cw_beginner/jh3aiu_cw.mp3",
+      "transcriptUrl": "https://dl1mgb.com/thisthat/wae/cw_beginner/jh3aiu_cw.txt",
+      "file": "wae-jh3aiu-cw.mp3",
+      "license": "Copyright Christian Janssen (DL1MGB); local evaluation only, do not redistribute",
+      "segment": { "start": 0, "duration": 91.768 },
+      "knownCopy": "QTC 48/10 1451 DL5AWI 38 1452 SP1AEN 73 1452 RN4SS 76 1453 IQ2C 311 1456 UW5Q 137 1456 OZ0RS 1T 1458 RN3BK 6 1458 YZ9A 3T3 1500 UT7E 289 1501 IS0UWX 36 (T is the physically keyed cut zero in report serials)",
+      "class": "real beginner WAE contest QTC; authoritative list, QSB, QRM, QRN, splatter and cut-zero reports",
+      "expect": {
+        "reference": "QTC 48/10 1451 DL5AWI 38 1452 SP1AEN 73 1452 RN4SS 76 1453 IQ2C 311 1456 UW5Q 137 1456 OZ0RS 1T 1458 RN3BK 6 1458 YZ9A 3T3 1500 UT7E 289 1501 IS0UWX 36",
+        "anchors": ["QTC 48/10", "SP1AEN 73", "RN4SS 76", "UW5Q 137", "IS0UWX 36"],
+        "keywords": ["QTC", "SP1AEN", "RN4SS", "UW5Q", "IS0UWX"],
+        "carrierHz": { "target": 595, "tolerance": 30 },
+        "wpm": { "target": 27.3, "tolerance": 4 },
+        "converged": false,
+        "limits": {
+          "maxCer": 0.12,
+          "maxWer": 0.25,
+          "minBoundaryF1": 0.25,
+          "minAnchorRecall": 0.8,
+          "minKeywordRecall": 0.8
+        }
+      }
+    },
+    {
+      "id": "wae-kl7hf-qtc",
+      "title": "KL7HF Worked All Europe CW QTC under interference",
+      "sourcePage": "https://dl1mgb.com/thisthat/wae.php",
+      "audioUrl": "https://dl1mgb.com/thisthat/wae/cw_advanced/kl7hf_cw.mp3",
+      "transcriptUrl": "https://dl1mgb.com/thisthat/wae/cw_advanced/kl7hf_cw.txt",
+      "file": "wae-kl7hf-cw.mp3",
+      "license": "Copyright Christian Janssen (DL1MGB); local evaluation only, do not redistribute",
+      "segment": { "start": 0, "duration": 102.844 },
+      "knownCopy": "QTC 17/10 1618 UY5ZZ 4T8 1619 DL1DTC 339 1620 HG6N 974 1623 9A5Y 815 1623 DL5ZD T1T 1624 DH1TW 58T 1624 DK5MV T73 1625 DL1IAO 584 1626 OH6NIO 235 1626 DL0MUE 454 (T is the physically keyed cut zero in report serials)",
+      "class": "real advanced WAE contest QTC; wanted 791 Hz lane competes with a stronger false carrier plus QSB/QRM",
+      "expect": {
+        "reference": "QTC 17/10 1618 UY5ZZ 4T8 1619 DL1DTC 339 1620 HG6N 974 1623 9A5Y 815 1623 DL5ZD T1T 1624 DH1TW 58T 1624 DK5MV T73 1625 DL1IAO 584 1626 OH6NIO 235 1626 DL0MUE 454",
+        "anchors": ["QTC 17/10", "UY5ZZ 4T8", "DL1DTC 339", "OH6NIO 235", "DL0MUE 454"],
+        "keywords": ["QTC", "UY5ZZ", "DL1DTC", "OH6NIO", "DL0MUE"],
+        "carrierHz": { "target": 791, "tolerance": 35 },
+        "wpm": { "target": 29, "tolerance": 5 },
+        "converged": false,
+        "limits": {
+          "maxCer": 0.35,
+          "maxWer": 0.55,
+          "minBoundaryF1": 0.35,
+          "minAnchorRecall": 0.6,
+          "minKeywordRecall": 0.6
+        }
+      }
+    },
+    {
+      "id": "priyom-m12",
+      "title": "Priyom M12 traffic excerpt with false-carrier competition",
+      "sourcePage": "https://priyom.org/number-stations/morse/m12",
+      "audioUrl": "https://priyom.org/media/101234/m12.ogg",
+      "file": "priyom-m12.ogg",
+      "license": "CC BY-NC-SA 4.0; attribution: Priyom.org contributors",
+      "segment": { "start": 0, "duration": 60.188 },
+      "knownCopy": "851 851 851 1 488 59 488 59 15235 84795 64277 3T284 TTT TTT (literal keyed copy; T is cut zero; a brief edit/noise mark before 15235 is excluded)",
+      "class": "real M12 numbers traffic; QSB and a false 1497 Hz lane compete with the wanted 997 Hz carrier",
+      "expect": {
+        "reference": "851 851 851 1 488 59 488 59 15235 84795 64277 3T284 TTT TTT",
+        "anchors": ["851 851 851", "488 59 488 59", "15235 84795 64277", "3T284 TTT TTT"],
+        "keywords": ["851", "488", "15235", "84795", "64277", "3T284", "TTT"],
+        "carrierHz": { "target": 997, "tolerance": 35 },
+        "wpm": { "target": 21, "tolerance": 4 },
+        "converged": false,
+        "limits": {
+          "maxCer": 0.45,
+          "maxWer": 0.65,
+          "minBoundaryF1": 0.3,
+          "minAnchorRecall": 0.5,
+          "minKeywordRecall": 0.57
+        }
+      }
+    },
+    {
+      "id": "priyom-m14",
+      "title": "Priyom M14 paired-group traffic with an on-recording edit",
+      "sourcePage": "https://priyom.org/number-stations/morse/m14",
+      "audioUrl": "https://priyom.org/media/103178/m14.ogg",
+      "file": "priyom-m14.ogg",
+      "license": "CC BY-NC-SA 4.0; attribution: Priyom.org contributors",
+      "segment": { "start": 0, "duration": 67.096 },
+      "knownCopy": "T58 T58 T58 <HH>J97 297 55 55 = = T6759 T6759 65583 65583 9TTT6 9TTT6 27756 27756 = = 297 297 55 55 TTTTT (literal waveform including the physical edit/botch; T is cut zero)",
+      "class": "real M14 numbers traffic; fading plus a broadband splice/edit that must remain literal rather than language-corrected",
+      "expect": {
+        "reference": "T58 T58 T58 <HH>J97 297 55 55 = = T6759 T6759 65583 65583 9TTT6 9TTT6 27756 27756 = = 297 297 55 55 TTTTT",
+        "anchors": ["T58 T58 T58", "<HH>J97 297", "T6759 T6759", "9TTT6 9TTT6", "27756 27756", "TTTTT"],
+        "keywords": ["T58", "<HH>", "J97", "T6759", "65583", "9TTT6", "27756", "TTTTT"],
+        "carrierHz": { "target": 1004, "tolerance": 30 },
+        "wpm": { "target": 20.3, "tolerance": 3 },
+        "converged": false,
+        "limits": {
+          "maxCer": 0.1,
+          "maxWer": 0.15,
+          "minBoundaryF1": 0.55,
+          "minAnchorRecall": 1,
+          "minKeywordRecall": 1
+        }
+      }
+    },
+    {
+      "id": "priyom-m01",
+      "title": "Priyom M01 simultaneous dual-tone traffic",
+      "sourcePage": "https://priyom.org/number-stations/morse/m01",
+      "audioUrl": "https://priyom.org/media/101166/m01.ogg",
+      "file": "priyom-m01.ogg",
+      "license": "CC BY-NC-SA 4.0; attribution: Priyom.org contributors",
+      "segment": { "start": 0, "duration": 81.083 },
+      "knownCopy": "T25 T25 T25 761 761 3T 3T = = 36113 36113 52294 52294 69684 69684 = = 761 761 3T 3T T T T (literal repeated excerpt; T is cut zero)",
+      "class": "real M01 numbers traffic; every keyed mark is transmitted simultaneously near 1 kHz and 2 kHz with irregular digit spacing",
+      "expect": {
+        "reference": "T25 T25 T25 761 761 3T 3T = = 36113 36113 52294 52294 69684 69684 = = 761 761 3T 3T T T T",
+        "anchors": ["T25 T25 T25", "761 761 3T 3T", "36113 36113", "52294 52294", "69684 69684", "T T T"],
+        "keywords": ["T25", "761", "3T", "36113", "52294", "69684"],
+        "carrierHz": {
+          "anyOf": [
+            { "target": 1000, "tolerance": 60 },
+            { "target": 2000, "tolerance": 60 }
+          ]
+        },
+        "wpm": { "min": 15, "max": 25 },
+        "converged": false,
+        "limits": {
+          "maxCer": 0.45,
+          "maxWer": 0.6,
+          "minBoundaryF1": 0.3,
+          "minAnchorRecall": 0.66,
+          "minKeywordRecall": 0.66
+        }
+      }
+    },
+    {
+      "id": "priyom-m23",
+      "title": "Priyom M23 sparse repeating identifier",
+      "sourcePage": "https://priyom.org/number-stations/morse/m23",
+      "audioUrl": "https://priyom.org/media/234047/m23.ogg",
+      "file": "priyom-m23.ogg",
+      "license": "CC BY-NC-SA 4.0; attribution: Priyom.org contributors",
+      "segment": { "start": 0, "duration": 26.732 },
+      "knownCopy": "943 943 943 943 (a low-confidence end transient after the fourth group is not message copy)",
+      "class": "real very-slow, low-density M23 identifier; short-copy false-convergence safety case",
+      "expect": {
+        "reference": "943 943 943 943",
+        "anchors": ["943 943 943 943"],
+        "keywords": ["943"],
+        "carrierHz": { "target": 748, "tolerance": 30 },
+        "wpm": { "target": 10, "tolerance": 2 },
+        "converged": false,
+        "limits": {
+          "maxCer": 0.1,
+          "maxWer": 0.25,
+          "minBoundaryF1": 0.8,
+          "minAnchorRecall": 1,
+          "minKeywordRecall": 1
+        }
+      }
+    },
+    {
+      "id": "uba-lusat-doppler",
+      "title": "LUSAT OSCAR-19 telemetry through orbital Doppler",
+      "sourcePage": "https://old.uba.be/fr/accueil/cw/cw-air-et-ailleurs",
+      "audioUrl": "https://old.uba.be/sites/default/files/media/cw/ubacw_lusat.mp3",
+      "transcriptUrl": "https://old.uba.be/sites/default/files/uploads/cw/ubacw_lusat.txt",
+      "file": "uba-lusat-doppler.mp3",
+      "license": "UBA site terms; no explicit redistribution license; local evaluation only, do not redistribute",
+      "segment": { "start": 0, "duration": 43.2 },
+      "knownCopy": "E LUSAT HI HI AO AVT ABN AA6 ANT ATB ABA A6T AE6 (exact publisher-supplied telemetry line; letters in numeric fields are documented cut numbers)",
+      "class": "real UHF satellite telemetry; the wanted audio tone sweeps about 440 Hz during one pass because of orbital Doppler",
+      "expect": {
+        "reference": "E LUSAT HI HI AO AVT ABN AA6 ANT ATB ABA A6T AE6",
+        "anchors": ["LUSAT HI HI", "AO AVT", "ANT ATB ABA", "A6T AE6"],
+        "keywords": ["LUSAT", "AVT", "ANT", "ATB", "ABA", "A6T", "AE6"],
+        "carrierHz": { "min": 1300, "max": 1850 },
+        "wpm": { "min": 9, "max": 15 },
+        "converged": false,
+        "limits": {
+          "maxCer": 0.12,
+          "maxWer": 0.3,
+          "minBoundaryF1": 0.75,
+          "minAnchorRecall": 1,
+          "minKeywordRecall": 1
+        }
+      }
+    },
+    {
+      "id": "priyom-m03-qrm",
+      "title": "Priyom M03 traffic under broadband QRM",
+      "sourcePage": "https://priyom.org/number-stations/morse/m03",
+      "audioUrl": "https://priyom.org/media/117838/m03.ogg",
+      "file": "priyom-m03-qrm.ogg",
+      "license": "CC BY-NC-SA 4.0; attribution: Priyom.org contributors; cache-only evaluation asset",
+      "segment": { "start": 0, "duration": 179.659 },
+      "knownCopy": "879 / 36 879 / 36 = = 62588 62588 13583 13583 6257T 6257T 5342T 5342T = = 879 / 36 879 / 36 879 / 36 879 / 36 879 / 36 = = 62588 13583 6257T 5342T = = T T T (strong repetition-derived waveform reference; T is the source-documented cut zero)",
+      "class": "real M03 numbers traffic; wanted 1007 Hz lane under severe broadband QRM loses global selection to a false carrier",
+      "expect": {
+        "reference": "879 / 36 879 / 36 = = 62588 62588 13583 13583 6257T 6257T 5342T 5342T = = 879 / 36 879 / 36 879 / 36 879 / 36 879 / 36 = = 62588 13583 6257T 5342T = = T T T",
+        "carrierHz": { "target": 1007, "tolerance": 30 },
+        "wpm": { "target": 13, "tolerance": 3 },
+        "converged": false,
+        "limits": { "maxCer": 0.15 }
+      }
+    },
+    {
+      "id": "uba-aurora",
+      "title": "VHF CW distorted by auroral propagation",
+      "sourcePage": "https://old.uba.be/fr/accueil/cw/cw-air-et-ailleurs",
+      "audioUrl": "https://old.uba.be/sites/default/files/media/cw/ubacw_aurora.mp3",
+      "file": "uba-aurora.mp3",
+      "license": "UBA site terms; recording credited to ON4AVJ; local evaluation only, do not redistribute",
+      "segment": { "start": 0, "duration": 25.488 },
+      "knownCopy": null,
+      "class": "real VHF auroral propagation; severe broadband tone spread and flutter",
+      "expect": { "converged": false }
+    },
+    {
+      "id": "dxu-ft5zm-wb7b",
+      "title": "FT5ZM and WB7B under a simultaneous stereo DX pileup",
+      "sourcePage": "https://dx-university.com/wp/audio-files/",
+      "audioUrl": "https://web.archive.org/web/20211205065901id_/http://www.dxuniversity.com/audio/2014-01-29-011231_0176.mp3",
+      "file": "dxu-ft5zm-wb7b.mp3",
+      "license": "DX University copyright; no explicit reuse license; archived original for local evaluation only, do not redistribute",
+      "segment": { "start": 485, "duration": 120 },
+      "knownCopy": "FT5ZM repeatedly attempts to copy WB7B and sends 5NN while other callers transmit over the exchange (source-identified partial reference beginning at about 08:09)",
+      "class": "real split-frequency DX pileup; stereo isolates the approximately 697 Hz DX lane from many simultaneous caller pitches",
+      "decoder": {
+        "wpmHint": 30,
+        "minimumFrequency": 500,
+        "maximumFrequency": 2200
+      },
+      "expect": {
+        "anchors": ["WB7B", "5NN"],
+        "keywords": ["WB7B", "5NN"],
+        "carrierHz": { "target": 697, "tolerance": 35 },
+        "wpm": { "min": 24, "max": 32 },
+        "converged": false,
+        "limits": {
+          "minAnchorRecall": 1,
+          "minKeywordRecall": 1
+        }
+      }
+    },
+    {
+      "id": "varc-session7-handoff",
+      "title": "G4IYT and G0OIK live beginner-QSO handoff",
+      "sourcePage": "https://www.verulam-arc.org.uk/cw-class/",
+      "audioUrl": "https://archive.org/download/morse-class-7/Morse%20Class%207.mp3",
+      "file": "varc-session7-handoff.mp3",
+      "license": "Verulam Amateur Radio Club recording; no explicit reuse license; local evaluation only, do not redistribute",
+      "segment": { "start": 1232, "duration": 48 },
+      "knownCopy": "HW CPY? G0OIK DE G4IYT KN [operator handoff] G4IYT DE G0OIK GE MATT FB SIGS HR = (exact source transcript; segment starts and ends inside the two published transmissions)",
+      "class": "real live 40 m training QSO; exact mistake-preserving source transcript and an abrupt same-frequency change of operator, timing and fist",
+      "decoder": {
+        "wpmHint": 16,
+        "minimumFrequency": 400,
+        "maximumFrequency": 800
+      },
+      "expect": {
+        "anchors": ["G0OIK DE G4IYT KN", "G4IYT DE G0OIK"],
+        "keywords": ["G0OIK", "G4IYT"],
+        "carrierHz": { "target": 582, "tolerance": 20 },
+        "converged": false,
+        "limits": {
+          "minAnchorRecall": 1,
+          "minKeywordRecall": 1
+        }
+      }
     }
   ]
 }

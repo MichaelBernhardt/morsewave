@@ -1,6 +1,12 @@
 import { annotateMorseValue, decodeMorse, isMorseCharacter } from "../morse";
 import { HAM_CW_TERMS, isHamCwScoringTerm } from "../hamVocabulary";
 import { hamMessageEvidence } from "../hamInterpreter";
+import {
+  analyzeQsbEnvelope,
+  buildQsbHmmRuns,
+  qsbHmmEligibility,
+  selectQsbHmmAlternate,
+} from "./qsbHmm";
 
 export interface OfflineDecodeOptions {
   wpmHint: number;
@@ -25,7 +31,10 @@ export interface OfflineDecodeToken {
 }
 
 export interface OfflineDecodeCandidate {
+  /** Actual spectral line used for this copy. */
   frequency: number;
+  /** Lowest credible coherent family member when this line is a keyed harmonic. */
+  fundamentalHz?: number;
   channel: number;
   score: number;
   wpm: number;
@@ -48,6 +57,8 @@ export interface OfflineDecodeResult {
   rawTranscript: string;
   tokens: OfflineDecodeToken[];
   frequency: number;
+  /** Lowest credible coherent harmonic-family member; `frequency` remains the actual decode lane. */
+  fundamentalHz?: number;
   channel: number;
   wpm: number;
   thresholdDb: number;
@@ -77,6 +88,7 @@ interface SpectralCandidate {
   frequency: number;
   channel: number;
   discoveryScore: number;
+  previewStartSeconds?: number;
 }
 
 interface Envelope {
@@ -115,6 +127,27 @@ interface DecodeHypothesis {
   contrastDb: number;
 }
 
+interface FinalDecodeResult {
+  candidate: SpectralCandidate;
+  hypothesis: DecodeHypothesis;
+  envelope: Envelope;
+  harmonicPenalty: number;
+}
+
+interface PreviewDecodeResult {
+  candidate: SpectralCandidate;
+  hypothesis: DecodeHypothesis;
+  envelope: Envelope;
+}
+
+interface TimingHandoff {
+  timestampMs: number;
+  leftUnitMs: number;
+  rightUnitMs: number;
+  gapMs: number;
+  gain: number;
+}
+
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
 
@@ -141,6 +174,156 @@ const median = (values: number[]) => {
     ? ordered[middle]
     : (ordered[middle - 1] + ordered[middle]) / 2;
 };
+
+function maximumEnvelopeCorrelation(
+  left: Float32Array,
+  right: Float32Array,
+  maximumLag = 25,
+) {
+  const sharedLength = Math.min(left.length, right.length);
+  if (sharedLength < 16) return 0;
+  let best = -1;
+  for (let lag = -maximumLag; lag <= maximumLag; lag += 1) {
+    const leftStart = Math.max(0, -lag);
+    const rightStart = Math.max(0, lag);
+    const length = sharedLength - Math.abs(lag);
+    if (length < 16) continue;
+    let leftSum = 0;
+    let rightSum = 0;
+    for (let index = 0; index < length; index += 1) {
+      leftSum += left[leftStart + index];
+      rightSum += right[rightStart + index];
+    }
+    const leftMean = leftSum / length;
+    const rightMean = rightSum / length;
+    let covariance = 0;
+    let leftVariance = 0;
+    let rightVariance = 0;
+    for (let index = 0; index < length; index += 1) {
+      const leftValue = left[leftStart + index] - leftMean;
+      const rightValue = right[rightStart + index] - rightMean;
+      covariance += leftValue * rightValue;
+      leftVariance += leftValue * leftValue;
+      rightVariance += rightValue * rightValue;
+    }
+    const denominator = Math.sqrt(leftVariance * rightVariance);
+    if (denominator > 0) best = Math.max(best, covariance / denominator);
+  }
+  return best;
+}
+
+function areCorrelatedHarmonicTracks(
+  left: FinalDecodeResult,
+  right: FinalDecodeResult,
+  allowKeyingSidebandOffset = false,
+) {
+  const [lower, upper] = [left, right].sort(
+    (first, second) => first.candidate.frequency - second.candidate.frequency,
+  );
+  if (lower.candidate.channel !== upper.candidate.channel) return false;
+  const ratio = upper.candidate.frequency / lower.candidate.frequency;
+  const harmonic = Math.round(ratio);
+  const maximumRatioError = allowKeyingSidebandOffset ? 0.05 : 0.01;
+  if (harmonic < 2 || harmonic > 6 ||
+    Math.abs(ratio - harmonic) / harmonic > maximumRatioError) return false;
+  if (lower.hypothesis.validRatio < 0.9 || lower.hypothesis.timingQuality < 0.55) return false;
+  if (Math.abs(lower.envelope.offsetMs - upper.envelope.offsetMs) > lower.envelope.hopMs * 2) {
+    return false;
+  }
+  return maximumEnvelopeCorrelation(lower.envelope.levelsDb, upper.envelope.levelsDb) >=
+    (allowKeyingSidebandOffset ? 0.82 : 0.68);
+}
+
+function isSameCompleteCopy(left: DecodeHypothesis, right: DecodeHypothesis) {
+  const normalize = (transcript: string) => transcript
+    .toUpperCase()
+    .replace(/\s+/g, " ")
+    .trim();
+  const leftCopy = normalize(left.transcript);
+  const rightCopy = normalize(right.transcript);
+  // Short procedural fragments such as CQ or 5NN are routinely sent by
+  // independent stations. Only remove confidence competition when two lanes
+  // contain the same sustained copy; both lanes remain visible to the user.
+  return leftCopy.replace(/\s/g, "").length >= 12 && leftCopy === rightCopy;
+}
+
+function reportedHarmonicFundamental(
+  winner: FinalDecodeResult,
+  results: FinalDecodeResult[],
+) {
+  const winnerWords = new Set(
+    winner.hypothesis.transcript.toUpperCase().match(/[A-Z0-9]{3,}/g) ?? [],
+  );
+  const related = results.filter((lower) => {
+    if (lower === winner || lower.candidate.channel !== winner.candidate.channel ||
+      lower.candidate.frequency >= winner.candidate.frequency ||
+      lower.hypothesis.validRatio < 0.9 || winner.hypothesis.validRatio < 0.9 ||
+      lower.hypothesis.timingQuality < 0.5 || winner.hypothesis.timingQuality < 0.6) return false;
+    const ratio = winner.candidate.frequency / lower.candidate.frequency;
+    const harmonic = Math.round(ratio);
+    if (harmonic < 2 || harmonic > 6 || Math.abs(ratio - harmonic) / harmonic > 0.003) return false;
+    const wpmRatio = Math.max(lower.hypothesis.wpm, winner.hypothesis.wpm) /
+      Math.max(1, Math.min(lower.hypothesis.wpm, winner.hypothesis.wpm));
+    if (wpmRatio > 1.15 ||
+      Math.abs(lower.envelope.offsetMs - winner.envelope.offsetMs) > lower.envelope.hopMs * 2 ||
+      maximumEnvelopeCorrelation(lower.envelope.levelsDb, winner.envelope.levelsDb) < 0.6) return false;
+    const lowerWords = lower.hypothesis.transcript.toUpperCase().match(/[A-Z0-9]{3,}/g) ?? [];
+    return lowerWords.some((word) => winnerWords.has(word));
+  });
+  if (!related.length) return undefined;
+  return Math.min(...related.map((result) => result.candidate.frequency));
+}
+
+function applyCorrelatedHarmonicPenalties(results: FinalDecodeResult[]) {
+  for (let leftIndex = 0; leftIndex < results.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < results.length; rightIndex += 1) {
+      const ordered = [results[leftIndex], results[rightIndex]].sort(
+        (left, right) => left.candidate.frequency - right.candidate.frequency,
+      );
+      const [lower, upper] = ordered;
+      if (!areCorrelatedHarmonicTracks(lower, upper)) continue;
+      if (upper.hypothesis.baseScore - lower.hypothesis.baseScore > 0.07) continue;
+      upper.harmonicPenalty = Math.max(upper.harmonicPenalty, 0.06);
+    }
+  }
+}
+
+function dedupeTransparentChannelCopies(results: PreviewDecodeResult[]) {
+  // Dual-mono recordings are common, and evaluating the byte-identical track
+  // from both channels can consume every finalist slot before a fundamental or
+  // a genuinely independent station is refined. Keep receiver diversity when
+  // the envelopes differ; collapse only effectively transparent channel copies.
+  const kept: PreviewDecodeResult[] = [];
+  for (const result of results) {
+    const duplicateIndex = kept.findIndex((other) =>
+      other.candidate.channel !== result.candidate.channel &&
+      Math.abs(other.candidate.frequency - result.candidate.frequency) < 5 &&
+      Math.abs(other.envelope.offsetMs - result.envelope.offsetMs) <= result.envelope.hopMs * 2 &&
+      maximumEnvelopeCorrelation(other.envelope.levelsDb, result.envelope.levelsDb) >= 0.995
+    );
+    if (duplicateIndex < 0) {
+      kept.push(result);
+      continue;
+    }
+    const previous = kept[duplicateIndex];
+    const resultQuality = [
+      result.hypothesis.baseScore,
+      result.hypothesis.timingQuality,
+      result.hypothesis.contrastDb,
+    ];
+    const previousQuality = [
+      previous.hypothesis.baseScore,
+      previous.hypothesis.timingQuality,
+      previous.hypothesis.contrastDb,
+    ];
+    const resultIsCleaner = resultQuality.some((value, index) =>
+      value > previousQuality[index] &&
+      resultQuality.slice(0, index).every((prior, priorIndex) => prior === previousQuality[priorIndex])
+    );
+    if (resultIsCleaner) kept[duplicateIndex] = result;
+  }
+  return kept;
+}
 
 const COMMON_BIGRAMS = new Set(
   "TH HE IN ER AN RE ON AT EN ND TI ES OR TE OF ED IS IT AL AR ST TO NT NG SE HA AS OU IO LE VE CO ME DE HI RI RO IC NE EA RA CE LI CH LL BE MA SI OM UR WI WA AV EG GI NN FI BA AD RS MO CW CQ QR QL QU BR OW FO OX LA AZ KE EY LP PY CA YE RD DA AY SO UN GR AP PP VY IM GL".split(" "),
@@ -186,6 +369,8 @@ function discoverCandidates(
   channels: Float32Array[],
   sampleRate: number,
   options: OfflineDecodeOptions,
+  requestedStartSeconds = 0,
+  requestedLimit?: number,
 ) {
   const minimum = clamp(options.minimumFrequency ?? 200, 80, sampleRate * 0.45);
   const maximum = clamp(options.maximumFrequency ?? 4000, minimum + 50, sampleRate * 0.45);
@@ -196,7 +381,14 @@ function discoverCandidates(
   const hopSize = Math.max(16, Math.round(sampleRate * 0.016));
   const window = makeHann(windowSize);
   const windowSum = window.reduce((sum, value) => sum + value, 0);
-  const previewLength = Math.min(channels[0]?.length ?? 0, Math.round(sampleRate * 4.5));
+  const recordingLength = channels[0]?.length ?? 0;
+  const previewLength = Math.min(recordingLength, Math.round(sampleRate * 4.5));
+  const previewStart = Math.round(clamp(
+    requestedStartSeconds * sampleRate,
+    0,
+    Math.max(0, recordingLength - previewLength),
+  ));
+  const previewEnd = previewStart + previewLength;
   const all: SpectralCandidate[] = [];
 
   for (let channelIndex = 0; channelIndex < channels.length; channelIndex += 1) {
@@ -206,7 +398,7 @@ function discoverCandidates(
     const activity = new Float64Array(frequencies.length);
     const previousDb = new Float64Array(frequencies.length);
     let frames = 0;
-    for (let start = 0; start + windowSize <= previewLength; start += hopSize) {
+    for (let start = previewStart; start + windowSize <= previewEnd; start += hopSize) {
       for (let index = 0; index < frequencies.length; index += 1) {
         const magnitude = magnitudeAtFrame(
           samples, start, windowSize, frequencies[index], sampleRate, window, windowSum,
@@ -237,16 +429,20 @@ function discoverCandidates(
         frequency: scores[index].frequency,
         channel: channelIndex,
         discoveryScore: scores[index].score,
+        previewStartSeconds: previewStart / sampleRate,
       });
     }
   }
 
   const separated: SpectralCandidate[] = [];
+  const candidateLimit = requestedLimit === undefined
+    ? Math.min(8, channels.length * 4)
+    : clamp(Math.round(requestedLimit), 1, 24);
   for (const candidate of all.sort((left, right) => right.discoveryScore - left.discoveryScore)) {
     if (separated.some((kept) => kept.channel === candidate.channel &&
       Math.abs(kept.frequency - candidate.frequency) < 55)) continue;
     separated.push(candidate);
-    if (separated.length >= Math.min(8, channels.length * 4)) break;
+    if (separated.length >= candidateLimit) break;
   }
   return separated;
 }
@@ -255,16 +451,25 @@ function refineFrequency(
   samples: Float32Array,
   sampleRate: number,
   coarseFrequency: number,
+  requestedStartSeconds = 0,
 ) {
   const windowSize = Math.max(128, Math.round(sampleRate * 0.064));
   const window = makeHann(windowSize);
   const windowSum = window.reduce((sum, value) => sum + value, 0);
   const previewLength = Math.min(samples.length, Math.round(sampleRate * 4.5));
+  const previewStart = Math.round(clamp(
+    requestedStartSeconds * sampleRate,
+    0,
+    Math.max(0, samples.length - previewLength),
+  ));
+  const previewEnd = previewStart + previewLength;
   const probeStarts: number[] = [];
   const probes = 18;
   for (let index = 0; index < probes; index += 1) {
-    probeStarts.push(Math.max(0, Math.min(previewLength - windowSize,
-      Math.round(index / Math.max(1, probes - 1) * Math.max(0, previewLength - windowSize)))));
+    probeStarts.push(Math.max(previewStart, Math.min(previewEnd - windowSize,
+      previewStart + Math.round(
+        index / Math.max(1, probes - 1) * Math.max(0, previewLength - windowSize),
+      ))));
   }
   let bestFrequency = coarseFrequency;
   let bestPower = -Infinity;
@@ -315,19 +520,26 @@ function extractEnvelope(
   sampleRate: number,
   frequency: number,
   maximumSeconds?: number,
+  requestedStartSeconds = 0,
 ): Envelope {
   const windowSize = Math.max(64, Math.round(sampleRate * 0.024));
   const hopSize = Math.max(8, Math.round(sampleRate * 0.002));
-  const maximumLength = maximumSeconds
+  const requestedLength = maximumSeconds
     ? Math.min(samples.length, Math.round(maximumSeconds * sampleRate))
     : samples.length;
+  const startSample = Math.round(clamp(
+    requestedStartSeconds * sampleRate,
+    0,
+    Math.max(0, samples.length - requestedLength),
+  ));
+  const maximumLength = Math.min(requestedLength, samples.length - startSample);
   const frameCount = Math.max(0, Math.floor((maximumLength - windowSize) / hopSize) + 1);
   const levelsDb = new Float32Array(frameCount);
   const window = makeHann(windowSize);
   const windowSum = window.reduce((sum, value) => sum + value, 0);
   for (let frame = 0; frame < frameCount; frame += 1) {
     const magnitude = magnitudeAtFrame(
-      samples, frame * hopSize, windowSize, frequency, sampleRate, window, windowSum,
+      samples, startSample + frame * hopSize, windowSize, frequency, sampleRate, window, windowSum,
     );
     levelsDb[frame] = Math.max(-120, 20 * Math.log10(magnitude + 1e-9));
   }
@@ -335,7 +547,7 @@ function extractEnvelope(
   return {
     levelsDb,
     hopMs: hopSize / sampleRate * 1000,
-    offsetMs: windowSize / sampleRate * 500,
+    offsetMs: (startSample + windowSize / 2) / sampleRate * 1000,
     ...clusters,
   };
 }
@@ -387,12 +599,15 @@ function buildRuns(
   return runs;
 }
 
-function fitUnit(runs: GateRun[], hintWpm: number) {
-  const marks = runs.filter((run) => run.keyed).map((run) => run.endMs - run.startMs);
+function fitUnit(runs: GateRun[], hintWpm: number, ignoreStuckCarrier = false) {
+  const hintUnit = 1200 / clamp(hintWpm, 5, 60);
+  const maximumPlausibleMark = Math.max(1200, hintUnit * 8);
+  const marks = runs.filter((run) => run.keyed)
+    .map((run) => run.endMs - run.startMs)
+    .filter((mark) => !ignoreStuckCarrier || mark <= maximumPlausibleMark);
   const gaps = runs.filter((run, index) => !run.keyed && index > 0 && index < runs.length - 1)
     .map((run) => run.endMs - run.startMs)
     .filter((gap) => gap < 3000);
-  const hintUnit = 1200 / clamp(hintWpm, 5, 60);
   let bestUnit = hintUnit;
   let bestLoss = Infinity;
   for (let unit = 20; unit <= 240; unit += 1) {
@@ -422,6 +637,113 @@ function fitUnit(runs: GateRun[], hintWpm: number) {
     unitMs: bestUnit,
     timingQuality: Math.exp(-median(deviations) * 2.4),
     marks: marks.length,
+  };
+}
+
+function fitHandoffUnit(runs: GateRun[]) {
+  const marks = runs.filter((run) => run.keyed).map((run) => run.endMs - run.startMs);
+  const gaps = runs.filter((run, index) => !run.keyed && index > 0 && index < runs.length - 1)
+    .map((run) => run.endMs - run.startMs)
+    .filter((gap) => gap < 3000);
+  let unitMs = 60;
+  let loss = Infinity;
+  for (let unit = 20; unit <= 240; unit += 1) {
+    let nextLoss = 0;
+    for (const mark of marks) {
+      const dot = ((mark - unit) / (unit * 0.42)) ** 2;
+      const dash = ((mark - unit * 3) / (unit * 0.9)) ** 2 + 0.04;
+      nextLoss += Math.min(9, dot, dash);
+    }
+    for (const gap of gaps) {
+      const element = ((gap - unit) / (unit * 0.48)) ** 2;
+      const character = ((gap - unit * 3) / (unit * 1.25)) ** 2 + 0.08;
+      const word = ((gap - unit * 7) / (unit * 2.2)) ** 2 + 0.12;
+      nextLoss += Math.min(6, element, character, word);
+    }
+    if (nextLoss < loss) {
+      loss = nextLoss;
+      unitMs = unit;
+    }
+  }
+  return { unitMs, loss, observations: marks.length + gaps.length };
+}
+
+function detectTimingHandoffs(envelope: Envelope, hypothesis: DecodeHypothesis) {
+  const runs = buildRuns(
+    envelope,
+    hypothesis.thresholdDb,
+    hypothesis.hysteresisDb,
+    hypothesis.debounceMs,
+  );
+  const candidates: TimingHandoff[] = [];
+  const sideRunCount = 48;
+  for (let index = 1; index < runs.length - 1; index += 1) {
+    const boundary = runs[index];
+    if (boundary.keyed || boundary.endMs - boundary.startMs < 120) continue;
+    const leftRuns = runs.slice(Math.max(0, index - sideRunCount), index);
+    const rightRuns = runs.slice(index + 1, Math.min(runs.length, index + sideRunCount + 1));
+    const left = fitHandoffUnit(leftRuns);
+    const right = fitHandoffUnit(rightRuns);
+    if (left.observations < 20 || right.observations < 20) continue;
+
+    const unitRatio = Math.max(left.unitMs, right.unitMs) /
+      Math.max(1, Math.min(left.unitMs, right.unitMs));
+    const gapMs = boundary.endMs - boundary.startMs;
+    const credibleSides = left.loss / left.observations <= 0.8 &&
+      right.loss / right.observations <= 0.8;
+    if (!credibleSides || unitRatio < 1.3 ||
+      gapMs < Math.min(left.unitMs, right.unitMs) * 6) continue;
+
+    const leftMiddle = Math.floor(leftRuns.length / 2);
+    const rightMiddle = Math.floor(rightRuns.length / 2);
+    const leftFar = fitHandoffUnit(leftRuns.slice(0, leftMiddle));
+    const leftNear = fitHandoffUnit(leftRuns.slice(leftMiddle));
+    const rightNear = fitHandoffUnit(rightRuns.slice(0, rightMiddle));
+    const rightFar = fitHandoffUnit(rightRuns.slice(rightMiddle));
+    const halfFits = [leftFar, leftNear, rightNear, rightFar];
+    if (halfFits.some((fit) => fit.observations < 8)) continue;
+    const leftStability = Math.max(leftFar.unitMs, leftNear.unitMs) /
+      Math.max(1, Math.min(leftFar.unitMs, leftNear.unitMs));
+    const rightStability = Math.max(rightFar.unitMs, rightNear.unitMs) /
+      Math.max(1, Math.min(rightFar.unitMs, rightNear.unitMs));
+    if (leftStability > 1.18 || rightStability > 1.18) continue;
+
+    const pooled = fitHandoffUnit([...leftRuns, boundary, ...rightRuns]);
+    const gain = (pooled.loss - left.loss - right.loss) / Math.max(1, pooled.observations);
+    if (gain < 0.18) continue;
+    candidates.push({
+      timestampMs: (boundary.startMs + boundary.endMs) / 2,
+      leftUnitMs: left.unitMs,
+      rightUnitMs: right.unitMs,
+      gapMs,
+      gain,
+    });
+  }
+
+  // A single handoff creates several nearby statistical candidates when a
+  // window straddles it. Keep the longest physical separating gap in each
+  // neighborhood; at most three actual operator changes are useful in one pass.
+  const selected: TimingHandoff[] = [];
+  for (const candidate of candidates.sort((left, right) => left.timestampMs - right.timestampMs)) {
+    const nearbyIndex = selected.findIndex((kept) =>
+      Math.abs(kept.timestampMs - candidate.timestampMs) < 1500
+    );
+    if (nearbyIndex < 0) selected.push(candidate);
+    else if (candidate.gapMs > selected[nearbyIndex].gapMs) selected[nearbyIndex] = candidate;
+  }
+  return selected.sort((left, right) => left.timestampMs - right.timestampMs).slice(0, 3);
+}
+
+function sliceEnvelope(envelope: Envelope, startMs: number, endMs: number) {
+  const startFrame = clamp(Math.round((startMs - envelope.offsetMs) / envelope.hopMs), 0, envelope.levelsDb.length);
+  const endFrame = clamp(Math.round((endMs - envelope.offsetMs) / envelope.hopMs), startFrame, envelope.levelsDb.length);
+  const levelsDb = envelope.levelsDb.slice(startFrame, endFrame);
+  const clusters = clusterLevels(levelsDb);
+  return {
+    levelsDb,
+    hopMs: envelope.hopMs,
+    offsetMs: envelope.offsetMs + startFrame * envelope.hopMs,
+    ...clusters,
   };
 }
 
@@ -483,6 +805,39 @@ function messageEvidenceQuality(
   const shape = shapedCharacters / Math.max(1, totalCharacters);
   const linguisticSupport = 0.55 + nextLanguageQuality * 0.45;
   return clamp(amount * shape * linguisticSupport, 0, 1);
+}
+
+function structuredTrafficRankingAdjustment(hypothesis: DecodeHypothesis) {
+  // Long contest/traffic messages are allowed a tiny carrier-selection repair
+  // without changing their literal decode, threshold choice, confidence, or
+  // convergence. The ordinary hypothesis scorer is intentionally conservative
+  // about figures, and its absolute replacement penalty can otherwise let a
+  // short clean key-click ridge beat a nearly complete QTC by one bad symbol.
+  if (hypothesis.validRatio < 0.9 || hypothesis.timingQuality < 0.5) return 0;
+  const words = hypothesis.transcript.match(/[A-Z0-9]+(?:\/[A-Z0-9]+)?/g) ?? [];
+  const structured = words.filter((word) =>
+    /^\d{1,6}(?:\/\d{1,3})?$/.test(word) ||
+    /^(?=.*\d)[0-9ANT]{2,6}$/.test(word) ||
+    /^(?=.{3,10}$)(?=.*[A-Z])(?=.*\d)[A-Z0-9]+(?:\/[A-Z0-9]+)?$/.test(word)
+  );
+  if (structured.length < 3) return 0;
+
+  const characters = hypothesis.tokens.filter((token) => !token.space);
+  const replacements = characters.filter((token) => token.value === "�").length;
+  const normalizedReplacementPenalty = Math.min(
+    0.08,
+    0.12 * replacements / Math.sqrt(Math.max(1, characters.length)),
+  );
+  const replacementRelief = Math.max(0, replacements * 0.08 - normalizedReplacementPenalty);
+  const structuredRatio = structured.reduce((sum, word) => sum + word.length, 0) /
+    Math.max(1, words.reduce((sum, word) => sum + word.length, 0));
+  const qtcHeader = words[0] === "QTC" && /^\d+\/\d+$/.test(words[1] ?? "") ? 0.015 : 0;
+  const timingSupport = clamp((hypothesis.timingQuality - 0.5) / 0.35, 0, 1) * 0.03;
+  return clamp(
+    replacementRelief + structuredRatio * 0.06 + qtcHeader + timingSupport,
+    0,
+    0.1,
+  );
 }
 
 function wordTokens(tokens: OfflineDecodeToken[]) {
@@ -606,6 +961,7 @@ function decodeRuns(
   characterUnits: number,
   wordUnits: number,
   languageAssist: boolean,
+  ignoreStuckCarrier = false,
 ) {
   const tokens: OfflineDecodeToken[] = [];
   let pattern = "";
@@ -681,6 +1037,14 @@ function decodeRuns(
       leadingGapMs = gap && !gap.keyed ? gap.endMs - gap.startMs : 0;
     }
     const duration = run.endMs - run.startMs;
+    if (ignoreStuckCarrier && duration > Math.max(1200, unitMs * 8)) {
+      // A long unmodulated carrier is a receiver/tuning state, not a Morse
+      // dash. Treat it as a hard boundary so a beacon that starts later in a
+      // recording cannot acquire a false leading or trailing T.
+      emit(run.startMs);
+      leadingGapMs = 0;
+      continue;
+    }
     const dotError = Math.abs(duration - unitMs) / Math.max(1, unitMs);
     const dashError = Math.abs(duration - unitMs * 3) / Math.max(1, unitMs * 3);
     const dash = duration >= unitMs * 1.95;
@@ -717,6 +1081,8 @@ function decodeRuns(
 function optimizeEnvelope(
   envelope: Envelope,
   options: OfflineDecodeOptions,
+  ignoreStuckCarrier = false,
+  presetRuns?: GateRun[],
 ) {
   const contrastDb = envelope.highDb - envelope.lowDb;
   let best: DecodeHypothesis | null = null;
@@ -736,8 +1102,8 @@ function optimizeEnvelope(
     { fraction: 0.72, recoveryPenalty: 0.05 },
     { fraction: 0.8, recoveryPenalty: 0.06 },
   ];
-  const hysteresisValues = [1, 1.5, 2];
-  const debounceValues = [4, 6, 10];
+  const hysteresisValues = presetRuns ? [0] : [1, 1.5, 2];
+  const debounceValues = presetRuns ? [0] : [4, 6, 10];
   const characterBoundaries = [1.75, 2.05, 2.4];
   // Real hand keys often collapse nominal 7-unit word spaces toward ordinary
   // character spacing. Search the ambiguous 3.5–5.5 unit region as well and
@@ -747,12 +1113,13 @@ function optimizeEnvelope(
     : [5.8, 6.8, 7.8];
 
   const evaluateThresholdProfiles = (profiles: typeof standardThresholdProfiles) => {
-    for (const { fraction: thresholdFraction, recoveryPenalty } of profiles) {
+    for (const { fraction: thresholdFraction, recoveryPenalty } of
+      presetRuns ? profiles.slice(0, 1) : profiles) {
       const thresholdDb = envelope.lowDb + contrastDb * thresholdFraction;
       for (const hysteresisDb of hysteresisValues) {
         for (const debounceMs of debounceValues) {
-          const runs = buildRuns(envelope, thresholdDb, hysteresisDb, debounceMs);
-          const fitted = fitUnit(runs, options.wpmHint);
+          const runs = presetRuns ?? buildRuns(envelope, thresholdDb, hysteresisDb, debounceMs);
+          const fitted = fitUnit(runs, options.wpmHint, ignoreStuckCarrier);
           if (fitted.marks < 3) continue;
           for (const characterUnits of characterBoundaries) {
             for (const wordUnits of wordBoundaries) {
@@ -763,6 +1130,7 @@ function optimizeEnvelope(
                 characterUnits,
                 wordUnits,
                 options.languageAssist,
+                ignoreStuckCarrier,
               );
               const nextLanguageQuality = options.languageAssist ? languageQuality(decoded.transcript) : 0.5;
               const speedQuality = Math.exp(-0.5 * (
@@ -835,7 +1203,7 @@ function optimizeEnvelope(
   evaluateThresholdProfiles(standardThresholdProfiles);
   const standardBaseScore = best ? (best as DecodeHypothesis).baseScore : -Infinity;
   const standardValidRatio = best ? (best as DecodeHypothesis).validRatio : 0;
-  if (standardBaseScore < 0.84 || standardValidRatio < 0.96) {
+  if (!presetRuns && (standardBaseScore < 0.84 || standardValidRatio < 0.96)) {
     evaluateThresholdProfiles(recoveryThresholdProfiles);
   }
   const alternatives = [...unique.values()].sort((left, right) => right.score - left.score).slice(0, 12);
@@ -843,6 +1211,111 @@ function optimizeEnvelope(
     best: consensusHypothesis(alternatives, options.languageAssist) ?? best,
     passCount,
     alternatives,
+  };
+}
+
+function optimizeTimingHandoffSegments(
+  envelope: Envelope,
+  global: DecodeHypothesis,
+  options: OfflineDecodeOptions,
+  ignoreStuckCarrier: boolean,
+) {
+  const handoffs = detectTimingHandoffs(envelope, global);
+  if (!handoffs.length) return { hypothesis: global, passCount: 0 };
+  const envelopeEndMs = envelope.offsetMs + envelope.levelsDb.length * envelope.hopMs;
+  const boundaries = [envelope.offsetMs, ...handoffs.map((handoff) => handoff.timestampMs), envelopeEndMs];
+  const unitHints = [handoffs[0].leftUnitMs, ...handoffs.map((handoff) => handoff.rightUnitMs)];
+  const segments: DecodeHypothesis[] = [];
+  let passCount = 0;
+  for (let index = 0; index < boundaries.length - 1; index += 1) {
+    const section = sliceEnvelope(envelope, boundaries[index], boundaries[index + 1]);
+    if (section.levelsDb.length < 64) return { hypothesis: global, passCount };
+    const optimized = optimizeEnvelope(
+      section,
+      { ...options, wpmHint: 1200 / unitHints[index] },
+      ignoreStuckCarrier,
+    );
+    passCount += optimized.passCount;
+    const hypothesis = optimized.best;
+    if (!hypothesis || hypothesis.baseScore < 0.62 || hypothesis.decoderScore < 0.62 ||
+      hypothesis.validRatio < 0.9 || hypothesis.timingQuality < 0.55) {
+      return { hypothesis: global, passCount };
+    }
+    segments.push(hypothesis);
+  }
+
+  const segmentTokens = segments.map((segment) => {
+    const tokens = [...segment.tokens];
+    while (tokens[0]?.space) tokens.shift();
+    while (tokens.at(-1)?.space) tokens.pop();
+    return tokens;
+  });
+  const weights = segmentTokens.map((tokens) =>
+    Math.max(1, tokens.filter((token) => !token.space).length)
+  );
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  const weighted = (select: (hypothesis: DecodeHypothesis) => number) =>
+    segments.reduce((sum, segment, index) => sum + select(segment) * weights[index], 0) /
+    Math.max(1, totalWeight);
+  const tokens: OfflineDecodeToken[] = [];
+  for (let index = 0; index < segmentTokens.length; index += 1) {
+    if (tokens.length && !tokens.at(-1)?.space && segmentTokens[index].length) {
+      tokens.push({
+        value: " ",
+        pattern: "/",
+        confidence: 0.5,
+        timestamp: handoffs[index - 1].timestampMs,
+        space: true,
+      });
+    }
+    tokens.push(...segmentTokens[index]);
+  }
+  const characters = tokens.filter((token) => !token.space);
+  const validCharacters = characters.filter((token) => token.value !== "�").length;
+  const globalCharacters = global.tokens.filter((token) => !token.space);
+  const globalValidCharacters = globalCharacters.filter((token) => token.value !== "�").length;
+  const replacements = characters.length - validCharacters;
+  const globalReplacements = globalCharacters.length - globalValidCharacters;
+  const timingQuality = weighted((segment) => segment.timingQuality);
+  const weightedBaseScore = weighted((segment) => segment.baseScore);
+  if (validCharacters < globalValidCharacters || replacements > globalReplacements ||
+    timingQuality < global.timingQuality - 0.05 || weightedBaseScore < global.baseScore - 0.02) {
+    return { hypothesis: global, passCount };
+  }
+
+  // Carrier selection has already happened. Cap the score lift so separate
+  // per-operator language fits can repair timing without manufacturing a new
+  // lexical advantage or an overconfident convergence result.
+  const baseScore = Math.min(weightedBaseScore, global.baseScore + 0.12);
+  const decoderScore = weighted((segment) => segment.decoderScore);
+  const validRatio = characters.length ? validCharacters / characters.length : 0;
+  const languageQuality = weighted((segment) => segment.languageQuality);
+  const messageQuality = weighted((segment) => segment.messageQuality);
+  const hamEvidence = weighted((segment) => segment.hamEvidence);
+  const unitMs = weighted((segment) => segment.unitMs);
+  const score = clamp(
+    baseScore + hamRankingBonus(hamEvidence, decoderScore, validRatio, timingQuality),
+    -2,
+    1.2,
+  );
+  return {
+    hypothesis: {
+      ...global,
+      transcript: tokens.map((token) => token.value).join("").trim(),
+      tokens,
+      score,
+      thresholdDb: weighted((segment) => segment.thresholdDb),
+      unitMs,
+      wpm: 1200 / unitMs,
+      timingQuality,
+      validRatio,
+      languageQuality,
+      messageQuality,
+      hamEvidence,
+      baseScore,
+      decoderScore,
+    },
+    passCount,
   };
 }
 
@@ -859,7 +1332,12 @@ export function optimizeMorseRecording(
 
   const candidates: SpectralCandidate[] = [];
   for (const candidate of discovered) {
-    const frequency = refineFrequency(channels[candidate.channel], sampleRate, candidate.frequency);
+    const frequency = refineFrequency(
+      channels[candidate.channel],
+      sampleRate,
+      candidate.frequency,
+      candidate.previewStartSeconds,
+    );
     if (candidates.some((kept) => kept.channel === candidate.channel && Math.abs(kept.frequency - frequency) < 45)) continue;
     candidates.push({ ...candidate, frequency });
     if (candidates.length >= 6) break;
@@ -867,62 +1345,353 @@ export function optimizeMorseRecording(
   onProgress?.({ phase: "candidates", fraction: 0.22, detail: `Testing ${candidates.length} carrier tracks` });
 
   let passCount = 0;
-  const previewResults: Array<{ candidate: SpectralCandidate; hypothesis: DecodeHypothesis }> = [];
+  const previewResults: PreviewDecodeResult[] = [];
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
     const envelope = extractEnvelope(
-      channels[candidate.channel], sampleRate, candidate.frequency, 4.5,
+      channels[candidate.channel],
+      sampleRate,
+      candidate.frequency,
+      4.5,
+      candidate.previewStartSeconds,
     );
     const optimized = optimizeEnvelope(envelope, options);
     passCount += optimized.passCount;
-    if (optimized.best) previewResults.push({ candidate, hypothesis: optimized.best });
+    if (optimized.best) previewResults.push({ candidate, hypothesis: optimized.best, envelope });
     onProgress?.({
       phase: "candidates",
       fraction: 0.22 + 0.33 * (index + 1) / candidates.length,
       detail: `Scored carrier ${index + 1} of ${candidates.length}`,
     });
   }
+  const durationSeconds = channels[0].length / sampleRate;
+  const isPhysicallyCrediblePreview = (hypothesis: DecodeHypothesis) => {
+    const characters = hypothesis.tokens.filter((token) => !token.space).length;
+    return characters >= 6 && hypothesis.decoderScore >= 0.52 &&
+      hypothesis.validRatio >= 0.9 && hypothesis.timingQuality >= 0.55 &&
+      hypothesis.wpm >= 5 && hypothesis.wpm <= 60;
+  };
+  const isStrongDeepRecovery = (hypothesis: DecodeHypothesis) => {
+    const characters = hypothesis.tokens.filter((token) => !token.space).length;
+    return characters >= 4 && hypothesis.baseScore >= 0.66 &&
+      hypothesis.decoderScore >= 0.65 && hypothesis.validRatio >= 0.98 &&
+      hypothesis.timingQuality >= 0.58 && hypothesis.wpm >= 5 && hypothesis.wpm <= 50;
+  };
+  if (durationSeconds <= 180 &&
+    !previewResults.some((result) => isPhysicallyCrediblePreview(result.hypothesis))) {
+    // A strong heterodyne, voice peak, or keyed harmonic can consume the small
+    // normal shortlist even when every resulting track has implausible timing.
+    // Only in that failure state, inspect a bounded deeper discovery list using
+    // short preview envelopes. Promote at most two tracks, and only when their
+    // physical decoder evidence independently clears a stricter Morse gate.
+    const deepDiscovered = discoverCandidates(channels, sampleRate, options, 0, 20);
+    const recoveries: PreviewDecodeResult[] = [];
+    for (const deep of deepDiscovered) {
+      const frequency = refineFrequency(
+        channels[deep.channel],
+        sampleRate,
+        deep.frequency,
+        deep.previewStartSeconds,
+      );
+      if (candidates.some((kept) => kept.channel === deep.channel &&
+        Math.abs(kept.frequency - frequency) < 45)) continue;
+      const candidate = { ...deep, frequency };
+      const envelope = extractEnvelope(
+        channels[candidate.channel],
+        sampleRate,
+        candidate.frequency,
+        4.5,
+        candidate.previewStartSeconds,
+      );
+      const optimized = optimizeEnvelope(envelope, options);
+      passCount += optimized.passCount;
+      if (!optimized.best || !isStrongDeepRecovery(optimized.best)) continue;
+      recoveries.push({ candidate, hypothesis: optimized.best, envelope });
+    }
+    recoveries
+      .sort((left, right) => right.hypothesis.baseScore - left.hypothesis.baseScore)
+      .slice(0, 2)
+      .forEach((recovery) => {
+        candidates.push(recovery.candidate);
+        previewResults.push(recovery);
+      });
+  }
+  if (!previewResults.length && durationSeconds > 4.5) {
+    // Some beacons and recordings open with a long steady carrier, calibration
+    // tone, or silence. Preserve the normal first-window ranking exactly; only
+    // when it produces no Morse hypothesis at all, retry a few later windows.
+    // In each window the strongest physical candidate gets first refusal, so a
+    // short noise track cannot win merely because many extra passes were run.
+    const starts = [
+      durationSeconds * 0.55,
+      durationSeconds * 0.5,
+      durationSeconds * 0.33,
+      durationSeconds - 4.5,
+    ]
+      .map((start) => clamp(start, 0, Math.max(0, durationSeconds - 4.5)))
+      .filter((start, index, values) =>
+        start > 0.25 && values.findIndex((value) => Math.abs(value - start) < 0.1) === index
+      );
+    let recovered = false;
+    for (const start of starts) {
+      const lateCandidates = discoverCandidates(channels, sampleRate, options, start);
+      for (const late of lateCandidates) {
+        const frequency = refineFrequency(
+          channels[late.channel],
+          sampleRate,
+          late.frequency,
+          late.previewStartSeconds,
+        );
+        const candidate = { ...late, frequency };
+        onProgress?.({
+          phase: "candidates",
+          fraction: 0.55,
+          detail: `Retrying late carrier ${Math.round(candidate.frequency)} Hz`,
+        });
+        const envelope = extractEnvelope(
+          channels[candidate.channel],
+          sampleRate,
+          candidate.frequency,
+          4.5,
+          candidate.previewStartSeconds,
+        );
+        const optimized = optimizeEnvelope(envelope, options, true);
+        passCount += optimized.passCount;
+        if (!optimized.best) continue;
+        candidates.push(candidate);
+        previewResults.push({ candidate, hypothesis: optimized.best, envelope });
+        recovered = true;
+        break;
+      }
+      if (recovered) break;
+    }
+  }
   if (!previewResults.length) throw new Error("No Morse-like keyed track survived timing analysis.");
   previewResults.sort((left, right) => right.hypothesis.score - left.hypothesis.score);
+  const independentPreviewResults = dedupeTransparentChannelCopies(previewResults)
+    .sort((left, right) => right.hypothesis.score - left.hypothesis.score);
 
-  const durationSeconds = channels[0].length / sampleRate;
-  const finalistCount = durationSeconds <= 120 ? Math.min(4, previewResults.length) : 1;
-  const finalResults: Array<{ candidate: SpectralCandidate; hypothesis: DecodeHypothesis }> = [];
+  const finalistCount = durationSeconds <= 120 ? Math.min(4, independentPreviewResults.length) : 1;
+  const finalists = independentPreviewResults.slice(0, finalistCount);
+  if (durationSeconds > 120 && finalists.length) {
+    // Long recordings normally refine one track for bounded runtime. If its
+    // preview is a keyed harmonic, reserve the credible lower family member
+    // for a full-file pass as well. Correlation only grants finalist status;
+    // the ordinary full decode and physical scoring still choose the winner.
+    const upper = finalists[0];
+    const lowerFamily = independentPreviewResults
+      .filter((lower) => {
+        if (lower.candidate.channel !== upper.candidate.channel ||
+          lower.candidate.frequency >= upper.candidate.frequency ||
+          lower.hypothesis.validRatio < 0.9 || lower.hypothesis.timingQuality < 0.38 ||
+          upper.hypothesis.baseScore - lower.hypothesis.baseScore > 0.07 ||
+          Math.abs(lower.envelope.offsetMs - upper.envelope.offsetMs) > lower.envelope.hopMs * 2) {
+          return false;
+        }
+        const ratio = upper.candidate.frequency / lower.candidate.frequency;
+        const harmonic = Math.round(ratio);
+        return harmonic >= 2 && harmonic <= 6 &&
+          Math.abs(ratio - harmonic) / harmonic <= 0.01 &&
+          maximumEnvelopeCorrelation(lower.envelope.levelsDb, upper.envelope.levelsDb) >= 0.68;
+      })
+      .sort((left, right) => left.candidate.frequency - right.candidate.frequency)[0];
+    if (lowerFamily) finalists.push(lowerFamily);
+  }
+  const finalResults: FinalDecodeResult[] = [];
   const variantsByTrack = new Map<string, DecodeHypothesis[]>();
-  for (let index = 0; index < finalistCount; index += 1) {
-    const finalist = previewResults[index];
+  for (let index = 0; index < finalists.length; index += 1) {
+    const finalist = finalists[index];
     onProgress?.({
       phase: "refine",
-      fraction: 0.58 + 0.36 * index / finalistCount,
-      detail: `Refining pass ${index + 1} of ${finalistCount}`,
+      fraction: 0.58 + 0.36 * index / finalists.length,
+      detail: `Refining pass ${index + 1} of ${finalists.length}`,
     });
     const envelope = extractEnvelope(
       channels[finalist.candidate.channel], sampleRate, finalist.candidate.frequency,
     );
-    const optimized = optimizeEnvelope(envelope, options);
+    const optimized = optimizeEnvelope(
+      envelope,
+      options,
+      Boolean(finalist.candidate.previewStartSeconds),
+    );
     passCount += optimized.passCount;
     if (optimized.best) {
-      finalResults.push({ candidate: finalist.candidate, hypothesis: optimized.best });
+      finalResults.push({
+        candidate: finalist.candidate,
+        hypothesis: optimized.best,
+        envelope,
+        harmonicPenalty: 0,
+      });
       variantsByTrack.set(
         `${finalist.candidate.channel}:${Math.round(finalist.candidate.frequency)}`,
         optimized.alternatives,
       );
     }
   }
-  finalResults.sort((left, right) => right.hypothesis.score - left.hypothesis.score);
-  const winner = finalResults[0] ?? previewResults[0];
+  // A short preview can prefer a busy noise lane simply because it yields more
+  // characters than a slow wanted station. Long recordings normally refine a
+  // single carrier for bounded runtime, so detect only a catastrophic
+  // full-file collapse and spend one extra pass verifying a much stronger,
+  // independently timing-stable physical track. This deliberately excludes
+  // language/message evidence and cannot affect the normal finalist budget.
+  if (durationSeconds > 120 && finalists.length === 1 && finalResults.length === 1) {
+    const initial = finalResults[0].hypothesis;
+    const catastrophicCollapse = initial.score < 0 && initial.decoderScore < 0.35 &&
+      (initial.validRatio < 0.75 || initial.timingQuality < 0.45);
+    if (catastrophicCollapse) {
+      const rescue = independentPreviewResults.find((preview) => {
+        const alreadyRefined = finalists.some((finalist) =>
+          finalist.candidate.channel === preview.candidate.channel &&
+          Math.abs(finalist.candidate.frequency - preview.candidate.frequency) < 5
+        );
+        const characters = preview.hypothesis.tokens.filter((token) => !token.space).length;
+        return !alreadyRefined && characters >= 3 && preview.hypothesis.score >= 0.4 &&
+          preview.candidate.discoveryScore >= finalists[0].candidate.discoveryScore * 2 &&
+          preview.hypothesis.decoderScore >= 0.45 && preview.hypothesis.validRatio >= 0.98 &&
+          preview.hypothesis.timingQuality >= 0.8 && preview.hypothesis.contrastDb >= 12 &&
+          preview.hypothesis.wpm >= 5 && preview.hypothesis.wpm <= 50;
+      });
+      if (rescue) {
+        const envelope = extractEnvelope(
+          channels[rescue.candidate.channel], sampleRate, rescue.candidate.frequency,
+        );
+        const optimized = optimizeEnvelope(
+          envelope,
+          options,
+          Boolean(rescue.candidate.previewStartSeconds),
+        );
+        passCount += optimized.passCount;
+        if (optimized.best) {
+          finalResults.push({
+            candidate: rescue.candidate,
+            hypothesis: optimized.best,
+            envelope,
+            harmonicPenalty: 0,
+          });
+          variantsByTrack.set(
+            `${rescue.candidate.channel}:${Math.round(rescue.candidate.frequency)}`,
+            optimized.alternatives,
+          );
+        }
+      }
+    }
+  }
+  applyCorrelatedHarmonicPenalties(finalResults);
+  finalResults.sort((left, right) =>
+    right.hypothesis.score + structuredTrafficRankingAdjustment(right.hypothesis) - right.harmonicPenalty -
+    (left.hypothesis.score + structuredTrafficRankingAdjustment(left.hypothesis) - left.harmonicPenalty)
+  );
+  const winner = finalResults[0] ?? independentPreviewResults[0];
+  const winningFinal = finalResults[0];
+  const fundamentalHz = winningFinal
+    ? reportedHarmonicFundamental(winningFinal, finalResults)
+    : undefined;
+  if (winningFinal) {
+    const segmented = optimizeTimingHandoffSegments(
+      winningFinal.envelope,
+      winningFinal.hypothesis,
+      options,
+      Boolean(winningFinal.candidate.previewStartSeconds),
+    );
+    passCount += segmented.passCount;
+    if (segmented.hypothesis !== winningFinal.hypothesis) {
+      const trackKey = `${winningFinal.candidate.channel}:${Math.round(winningFinal.candidate.frequency)}`;
+      variantsByTrack.set(trackKey, [
+        segmented.hypothesis,
+        ...(variantsByTrack.get(trackKey) ?? []),
+      ]);
+      winningFinal.hypothesis = segmented.hypothesis;
+    }
+  }
+  // The hard/segmented lane remains authoritative for station selection,
+  // confidence, and convergence. A duration-state alternate may refine only
+  // the copy of that same lane when measured QSB and every corpus-proven guard
+  // agree; it can never manufacture a lock.
+  const authoritativeHypothesis = winner.hypothesis;
+  if (winningFinal) {
+    const diagnostics = analyzeQsbEnvelope(winningFinal.envelope);
+    if (qsbHmmEligibility(diagnostics, authoritativeHypothesis.timingQuality).eligible) {
+      const qsbRuns = buildQsbHmmRuns(
+        winningFinal.envelope,
+        authoritativeHypothesis.wpm,
+      );
+      const optimized = optimizeEnvelope(
+        winningFinal.envelope,
+        { ...options, wpmHint: authoritativeHypothesis.wpm },
+        Boolean(winningFinal.candidate.previewStartSeconds),
+        qsbRuns,
+      );
+      passCount += optimized.passCount;
+      if (optimized.best) {
+        const laneKey = `${winningFinal.candidate.channel}:${Math.round(winningFinal.candidate.frequency)}`;
+        const decision = selectQsbHmmAlternate(diagnostics, {
+          laneKey,
+          transcript: authoritativeHypothesis.transcript,
+          baseScore: authoritativeHypothesis.baseScore,
+          validRatio: authoritativeHypothesis.validRatio,
+          wpm: authoritativeHypothesis.wpm,
+          timingQuality: authoritativeHypothesis.timingQuality,
+          converged: false,
+        }, {
+          laneKey,
+          transcript: optimized.best.transcript,
+          baseScore: optimized.best.baseScore,
+          validRatio: optimized.best.validRatio,
+          wpm: optimized.best.wpm,
+        });
+        if (decision.useAlternate) {
+          variantsByTrack.set(laneKey, [
+            optimized.best,
+            authoritativeHypothesis,
+            ...(variantsByTrack.get(laneKey) ?? []),
+          ]);
+          winningFinal.hypothesis = optimized.best;
+        }
+      }
+    }
+  }
   const winnerVariants = variantsByTrack.get(
     `${winner.candidate.channel}:${Math.round(winner.candidate.frequency)}`,
   ) ?? [winner.hypothesis];
-  const alternatives = [...finalResults, ...previewResults]
+  const harmonicFundamentals = new Map(finalResults.flatMap((result) => {
+    const reported = reportedHarmonicFundamental(result, finalResults);
+    return reported === undefined
+      ? []
+      : [[`${result.candidate.channel}:${Math.round(result.candidate.frequency)}`, reported] as const];
+  }));
+  const harmonicDuplicateKeys = new Set(finalResults
+    // A similar envelope alone is not proof of a duplicate: two operators can
+    // key at the same cadence on different receiver channels. Only candidates
+    // that passed the same-channel integer-harmonic test receive a penalty and
+    // may be hidden from the station-lane list.
+    .filter((result) => result !== winningFinal && (
+      result.harmonicPenalty > 0 || Boolean(
+        winningFinal && areCorrelatedHarmonicTracks(winningFinal, result, true)
+      )
+    ))
+    .map((result) => `${result.candidate.channel}:${Math.round(result.candidate.frequency)}`));
+  const alternatives = [...finalResults, ...independentPreviewResults]
+    .filter((item) => !harmonicDuplicateKeys.has(
+      `${item.candidate.channel}:${Math.round(item.candidate.frequency)}`,
+    ))
     .filter((item, index, values) => values.findIndex((other) =>
       other.candidate.channel === item.candidate.channel &&
       Math.abs(other.candidate.frequency - item.candidate.frequency) < 5,
     ) === index)
-    .sort((left, right) => right.hypothesis.score - left.hypothesis.score)
+    .sort((left, right) => {
+      const leftSelected = left.candidate.channel === winner.candidate.channel &&
+        Math.abs(left.candidate.frequency - winner.candidate.frequency) < 5;
+      const rightSelected = right.candidate.channel === winner.candidate.channel &&
+        Math.abs(right.candidate.frequency - winner.candidate.frequency) < 5;
+      return Number(rightSelected) - Number(leftSelected) ||
+        right.hypothesis.score - left.hypothesis.score;
+    })
     .slice(0, 4)
     .map(({ candidate, hypothesis }) => ({
       frequency: candidate.frequency,
+      fundamentalHz: harmonicFundamentals.get(
+        `${candidate.channel}:${Math.round(candidate.frequency)}`,
+      ),
       channel: candidate.channel,
       score: hypothesis.score,
       wpm: hypothesis.wpm,
@@ -951,26 +1720,39 @@ export function optimizeMorseRecording(
     transcript: hypothesis.transcript,
     thresholdDb: hypothesis.thresholdDb,
   }));
-  const physicalPeers = [...finalResults, ...previewResults]
+  // Confidence compares like with like. A 4.5-second preview can be an
+  // excellent fragment of a short interferer while collapsing over the full
+  // recording; letting it challenge a full-file winner made exact long copy
+  // look ambiguous. Use fully refined tracks whenever one exists, and treat
+  // receiver channels at the same frequency as one physical station lane.
+  const confidencePool: Array<FinalDecodeResult | PreviewDecodeResult> = winningFinal
+    ? finalResults
+    : independentPreviewResults;
+  const physicalPeers = confidencePool
+    .filter((item) => !harmonicDuplicateKeys.has(
+      `${item.candidate.channel}:${Math.round(item.candidate.frequency)}`,
+    ))
     .filter((item, index, values) => values.findIndex((other) =>
-      other.candidate.channel === item.candidate.channel &&
       Math.abs(other.candidate.frequency - item.candidate.frequency) < 5,
     ) === index)
-    .filter((item) => item.candidate.channel !== winner.candidate.channel ||
-      Math.abs(item.candidate.frequency - winner.candidate.frequency) >= 5)
+    .filter((item) => Math.abs(item.candidate.frequency - winner.candidate.frequency) >= 5)
+    .filter((item) => !isSameCompleteCopy(authoritativeHypothesis, item.hypothesis))
     .sort((left, right) => right.hypothesis.baseScore - left.hypothesis.baseScore);
-  const physicalRunnerUp = physicalPeers[0]?.hypothesis.baseScore ?? 0;
-  const absoluteQuality = clamp((winner.hypothesis.baseScore - 0.55) / 0.35, 0, 1);
-  const marginQuality = clamp((winner.hypothesis.baseScore - physicalRunnerUp) / 0.18, 0, 1);
+  const absoluteQuality = clamp((authoritativeHypothesis.baseScore - 0.55) / 0.35, 0, 1);
+  // With no second full-file track, the absolute decoder/validity gates still
+  // carry convergence; there is no comparable station lane to subtract.
+  const marginQuality = physicalPeers.length
+    ? clamp((authoritativeHypothesis.baseScore - physicalPeers[0].hypothesis.baseScore) / 0.18, 0, 1)
+    : 1;
   const confidence = clamp(0.25 + 0.74 * (absoluteQuality * 0.7 + marginQuality * 0.3), 0.25, 0.99);
   // The legacy streaming decoder remains the safer choice for recordings that
   // do not produce a strong, valid consensus (wideband voice/noise, multiple
   // overlapping bands, or extremely degraded historical audio). File search is
   // an enhancement, not permission to replace a better live result with a weak
   // offline guess.
-  const converged = winner.hypothesis.baseScore >= 0.75 &&
-    winner.hypothesis.decoderScore >= 0.7 &&
-    winner.hypothesis.validRatio >= 0.96 && confidence >= 0.78;
+  const converged = authoritativeHypothesis.baseScore >= 0.75 &&
+    authoritativeHypothesis.decoderScore >= 0.7 &&
+    authoritativeHypothesis.validRatio >= 0.96 && confidence >= 0.78;
   const rawTranscript = winner.hypothesis.transcript;
   const tokens = winner.hypothesis.tokens.map((token) => {
     if (token.space) return token;
@@ -984,6 +1766,7 @@ export function optimizeMorseRecording(
     rawTranscript,
     tokens,
     frequency: winner.candidate.frequency,
+    fundamentalHz,
     channel: winner.candidate.channel,
     wpm: winner.hypothesis.wpm,
     thresholdDb: winner.hypothesis.thresholdDb,

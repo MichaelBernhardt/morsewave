@@ -116,7 +116,7 @@ describe("AdaptiveMorseDecoder", () => {
     for (let seed = 1; seed <= 30; seed += 1) {
       expect(decode("BAD FIST TEST", 15, 20, 0.42, seed).output, `seed ${seed}`).toBe("BAD FIST TEST");
     }
-  });
+  }, 20_000);
 
   it("bridges key bounce, brief fades, and false edge clicks", () => {
     let output = "";

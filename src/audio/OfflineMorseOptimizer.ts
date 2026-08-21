@@ -1,10 +1,11 @@
 import type {
   OfflineDecodeOptions,
   OfflineDecodeProgress,
-  OfflineDecodeResult,
+  OfflineDecodeResult as ClassicalOfflineDecodeResult,
   OfflineWorkerRequest,
   OfflineWorkerResponse,
 } from "./offline/optimizerCore";
+import type { NeuralDecodeAdvisory } from "./offline/neuralAdvisory";
 
 const ANALYSIS_SAMPLE_RATE = 12_000;
 
@@ -18,6 +19,14 @@ export const DEFAULT_OFFLINE_DECODE_OPTIONS: OfflineDecodeOptions = {
 export interface OptimizeMorseBufferOptions extends Partial<OfflineDecodeOptions> {
   signal?: AbortSignal;
   onProgress?: (progress: OfflineDecodeProgress) => void;
+}
+
+/**
+ * Neural copy is deliberately additive. The classical result remains intact
+ * and owns playback channel, frequency, WPM, confidence, and convergence.
+ */
+export interface OfflineDecodeResult extends ClassicalOfflineDecodeResult {
+  neuralAdvisories?: NeuralDecodeAdvisory[];
 }
 
 /**
@@ -69,7 +78,7 @@ export async function optimizeMorseBuffer(
         return;
       }
       finish();
-      if (message.type === "result") resolve(message.result);
+      if (message.type === "result") resolve(message.result as OfflineDecodeResult);
       else reject(new Error(message.message));
     };
     worker.onerror = (event) => {
@@ -102,6 +111,6 @@ export type {
   OfflineDecodeCandidate,
   OfflineDecodeOptions,
   OfflineDecodeProgress,
-  OfflineDecodeResult,
   OfflineDecodeToken,
 } from "./offline/optimizerCore";
+export type { NeuralDecodeAdvisory } from "./offline/neuralAdvisory";

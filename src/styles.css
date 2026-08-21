@@ -647,6 +647,145 @@ kbd {
   line-height: 1.45;
 }
 
+.station-lanes {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.station-lanes-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--green);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 720;
+  letter-spacing: 0.09em;
+}
+
+.station-lanes-heading small {
+  color: var(--faint);
+  font: inherit;
+  font-weight: 520;
+}
+
+.station-lanes > ol {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.station-lane {
+  min-width: 0;
+  padding: 8px 9px 9px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-strong);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--panel-soft) 72%, transparent);
+}
+
+.station-lane.is-selected {
+  border-color: color-mix(in srgb, var(--green) 28%, var(--line));
+  border-left-color: var(--green);
+  background: color-mix(in srgb, var(--green) 3%, var(--panel-soft));
+}
+
+.station-lane-header {
+  display: grid;
+  grid-template-columns: 20px max-content max-content minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 7.5px;
+  letter-spacing: 0.055em;
+  line-height: 1.25;
+}
+
+.station-lane-index { color: var(--faint); }
+.station-lane-header strong { color: var(--text); font-size: 9px; letter-spacing: 0.04em; }
+
+.station-lane-metrics {
+  min-width: 0;
+  color: var(--faint);
+  text-align: right;
+}
+
+.station-lane-state {
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  color: var(--faint);
+  background: var(--panel);
+  white-space: nowrap;
+}
+
+.station-lane-state.is-selected {
+  border-color: color-mix(in srgb, var(--green) 32%, var(--line));
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.station-lane-copy {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 9px;
+  align-items: baseline;
+  margin-top: 6px;
+}
+
+.station-lane-copy > span {
+  color: var(--faint);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 7px;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.station-lane-copy code {
+  min-width: 0;
+  color: var(--text-soft);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9.5px;
+  line-height: 1.48;
+  letter-spacing: 0.025em;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.station-lanes > p {
+  margin: 0;
+  color: var(--faint);
+  font-size: 8px;
+  line-height: 1.4;
+}
+
+.neural-lanes {
+  border-top-color: color-mix(in srgb, var(--violet) 22%, var(--line));
+}
+
+.neural-lanes .station-lanes-heading { color: var(--violet); }
+
+.neural-lane {
+  border-color: color-mix(in srgb, var(--violet) 18%, var(--line));
+  border-left-color: color-mix(in srgb, var(--violet) 62%, var(--line-strong));
+  background: color-mix(in srgb, var(--violet) 3%, var(--panel-soft));
+}
+
+.neural-lane-state {
+  border-color: color-mix(in srgb, var(--violet) 28%, var(--line));
+  color: color-mix(in srgb, var(--violet) 78%, var(--text));
+  background: color-mix(in srgb, var(--violet) 7%, var(--panel));
+}
+
+.neural-lane-copy code { color: color-mix(in srgb, var(--text-soft) 92%, var(--violet)); }
+
 .decode-cursor {
   width: 2px;
   height: 1.05em;
@@ -1287,6 +1426,10 @@ input[type="range"]:disabled { cursor: default; }
   .advisory-expansion { grid-template-columns: 1fr; gap: 4px; }
   .multipass-candidate-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
   .candidate-reading { grid-template-columns: 1fr; gap: 4px; }
+  .station-lanes-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .station-lane-header { grid-template-columns: 20px max-content minmax(0, 1fr) max-content; gap: 6px; }
+  .station-lane-metrics { grid-column: 2 / -1; grid-row: 2; text-align: left; }
+  .station-lane-copy { grid-template-columns: 1fr; gap: 3px; }
   .copy-quality { display: none; }
   .app-footer { grid-template-columns: 1fr auto; }
   .footer-center { display: none; }

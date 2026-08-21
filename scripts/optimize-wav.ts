@@ -47,8 +47,11 @@ const started = performance.now();
 const result = optimizeMorseRecording(channels, analysisRate, {
   wpmHint: Number(process.env.MORSEWAVE_WPM || 20),
   languageAssist: process.env.MORSEWAVE_LANGUAGE !== "0",
-  minimumFrequency: 200,
-  maximumFrequency: Math.min(4000, analysisRate * 0.45),
+  minimumFrequency: Number(process.env.MORSEWAVE_MIN_HZ || 200),
+  maximumFrequency: Math.min(
+    Number(process.env.MORSEWAVE_MAX_HZ || 4000),
+    analysisRate * 0.45,
+  ),
 }, (progress) => {
   if (process.env.MORSEWAVE_PROGRESS === "1") process.stderr.write(`${progress.detail}\n`);
 });

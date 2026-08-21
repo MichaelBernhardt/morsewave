@@ -1,0 +1,2 @@
+# Preserve the exact audited CWformer release bytes; runtime and CI verify hashes.
+public/models/cwformer-v0.2.0/* binary

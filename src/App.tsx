@@ -24,7 +24,11 @@ import {
 import { AudioEngine, type AnalysisFrame, type AudioSourceKind } from "./audio/AudioEngine";
 import type { DecodedCharacter } from "./audio/AdaptiveMorseDecoder";
 import { interpretHamCopy, type HamMarker } from "./audio/hamInterpreter";
-import type { OfflineDecodeProgress, OfflineDecodeResult } from "./audio/OfflineMorseOptimizer";
+import type {
+  OfflineDecodeCandidate,
+  OfflineDecodeProgress,
+  OfflineDecodeResult,
+} from "./audio/OfflineMorseOptimizer";
 import { Panel, RangeControl, Toggle } from "./components/Controls";
 import { SignalScope } from "./components/SignalScope";
 
@@ -87,6 +91,53 @@ function sourceLabel(source: AudioSourceKind) {
   if (source === "microphone") return "Microphone";
   if (source === "file") return "Audio file";
   return "Guided demo";
+}
+
+interface StationLane {
+  candidate: OfflineDecodeCandidate;
+  selected: boolean;
+}
+
+const clampQuality = (value: number) => Math.max(0, Math.min(1, value));
+
+function stationLanesFor(result: OfflineDecodeResult | null): StationLane[] {
+  if (!result) return [];
+
+  return result.candidates
+    .map((candidate) => ({
+      candidate,
+      selected: candidate.channel === result.channel &&
+        Math.abs(candidate.frequency - result.frequency) < 5,
+    }))
+    .filter(({ candidate }) => {
+      const copyLength = candidate.transcript.replace(/\s/g, "").length;
+      const isReportedSelectedFundamental = result.fundamentalHz &&
+        Math.abs(result.frequency - result.fundamentalHz) >= 55 &&
+        Math.abs(candidate.frequency - result.fundamentalHz) < 55 &&
+        Math.abs(candidate.frequency - result.frequency) >= 55;
+      return !isReportedSelectedFundamental && copyLength >= 2 &&
+        candidate.validRatio >= 0.78 &&
+        candidate.timingQuality >= 0.58 &&
+        candidate.decoderScore >= 0.35;
+    })
+    .sort((left, right) => Number(right.selected) - Number(left.selected) ||
+      right.candidate.decoderScore - left.candidate.decoderScore)
+    .reduce<StationLane[]>((lanes, lane) => {
+      if (lanes.length >= 4 || lanes.some(({ candidate }) =>
+        Math.abs(candidate.frequency - lane.candidate.frequency) < 55)) return lanes;
+      return [...lanes, lane];
+    }, []);
+}
+
+function carrierDisplay(frequency: number, fundamentalHz?: number) {
+  if (!fundamentalHz || Math.abs(frequency - fundamentalHz) < 55) {
+    return { primary: `${Math.round(frequency)} HZ`, detail: null };
+  }
+  const harmonic = Math.max(2, Math.round(frequency / fundamentalHz));
+  return {
+    primary: `${Math.round(fundamentalHz)} HZ F0`,
+    detail: `DECODE ${Math.round(frequency)} HZ · H${harmonic}`,
+  };
 }
 
 export default function App() {
@@ -324,6 +375,7 @@ export default function App() {
     }
     return interpretHamCopy(offlineResult.transcript);
   }, [offlineResult, settings.languageAssist]);
+  const stationLanes = useMemo(() => stationLanesFor(offlineResult), [offlineResult]);
   const characters = useMemo(() => tokens.filter((token) => !token.space), [tokens]);
   const recentCharacters = useMemo(() => characters.slice(-5).reverse(), [characters]);
   const averageConfidence = useMemo(() => {
@@ -567,6 +619,97 @@ export default function App() {
                   <em>Held out because the physical timing/validity convergence gate did not pass.</em>
                 </section>
               )}
+              {offlineResult && stationLanes.length > 0 && (
+                <section
+                  className="station-lanes"
+                  aria-labelledby="station-lanes-title"
+                  aria-describedby="station-lanes-note"
+                >
+                  <div className="station-lanes-heading">
+                    <span id="station-lanes-title">STATION LANES</span>
+                    <small>INDEPENDENT CARRIERS · ALTERNATIVES ARE NON-AUTHORITATIVE</small>
+                  </div>
+                  <ol aria-label="Credible distinct-frequency Morse carrier candidates">
+                    {stationLanes.map(({ candidate, selected }, index) => (
+                      <li className={`station-lane ${selected ? "is-selected" : ""}`} key={`${candidate.channel}:${Math.round(candidate.frequency)}`}>
+                        <div className="station-lane-header">
+                          <span className="station-lane-index" aria-hidden="true">
+                            {String(index + 1).padStart(2, "0")}
+                          </span>
+                          <strong>{carrierDisplay(
+                            candidate.frequency,
+                            candidate.fundamentalHz ?? (selected ? offlineResult.fundamentalHz : undefined),
+                          ).primary}</strong>
+                          <span>{carrierDisplay(
+                            candidate.frequency,
+                            candidate.fundamentalHz ?? (selected ? offlineResult.fundamentalHz : undefined),
+                          ).detail
+                            ? `${carrierDisplay(
+                              candidate.frequency,
+                              candidate.fundamentalHz ?? (selected ? offlineResult.fundamentalHz : undefined),
+                            ).detail} · ${candidate.wpm.toFixed(1)} WPM`
+                            : `${candidate.wpm.toFixed(1)} WPM`}</span>
+                          <span className="station-lane-metrics">
+                            QUALITY {Math.round(clampQuality(candidate.decoderScore) * 100)}%
+                            {` · VALID ${Math.round(clampQuality(candidate.validRatio) * 100)}%`}
+                            {` · TIMING ${Math.round(clampQuality(candidate.timingQuality) * 100)}%`}
+                          </span>
+                          <span className={`station-lane-state ${selected ? "is-selected" : ""}`}>
+                            {selected ? (offlineResult.converged ? "SELECTED" : "SELECTED CANDIDATE") : "ALT · NON-AUTH"}
+                          </span>
+                        </div>
+                        <div className="station-lane-copy">
+                          <span>RAW COPY</span>
+                          <code>{candidate.transcript}</code>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                  <p id="station-lanes-note">
+                    One physical carrier per lane. Copy is never merged across frequencies.
+                  </p>
+                </section>
+              )}
+              {offlineResult?.neuralAdvisories?.length ? (
+                <section
+                  className="station-lanes neural-lanes"
+                  aria-labelledby="neural-lanes-title"
+                  aria-describedby="neural-lanes-note"
+                >
+                  <div className="station-lanes-heading">
+                    <span id="neural-lanes-title">CWFORMER LANE COPY</span>
+                    <small>LOCAL INT8 · ADVISORY ONLY · NEVER USED FOR LOCK</small>
+                  </div>
+                  <ol aria-label="Independent non-authoritative neural station transcripts">
+                    {offlineResult.neuralAdvisories.map((advisory, index) => (
+                      <li
+                        className="station-lane neural-lane"
+                        key={`${advisory.channel}:${Math.round(advisory.sourceFrequency)}`}
+                      >
+                        <div className="station-lane-header">
+                          <span className="station-lane-index" aria-hidden="true">
+                            N{index + 1}
+                          </span>
+                          <strong>{Math.round(advisory.sourceFrequency)} HZ</strong>
+                          <span>CH {advisory.channel + 1} → {advisory.conditionedFrequency} HZ</span>
+                          <span className="station-lane-metrics">
+                            CTC μ {Math.round(clampQuality(advisory.meanTokenConfidence) * 100)}%
+                            {` · ${(advisory.inferenceMs / 1_000).toFixed(1)} S`}
+                          </span>
+                          <span className="station-lane-state neural-lane-state">NON-AUTH</span>
+                        </div>
+                        <div className="station-lane-copy neural-lane-copy">
+                          <span>MODEL COPY</span>
+                          <code>{advisory.transcript}</code>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                  <p id="neural-lanes-note">
+                    One model pass per classical carrier. Lanes and text are never merged; raw Multipass copy remains authoritative.
+                  </p>
+                </section>
+              ) : null}
             </div>
             <div className="copy-footer">
               <span>{characters.length} characters</span>
@@ -574,7 +717,11 @@ export default function App() {
               <span>{wordCount} words</span>
               <i />
               <span>{formatDuration(elapsed)} elapsed</span>
-              {offlineResult && <span className="optimizer-summary">MULTIPASS {offlineResult.converged ? "LOCK" : "CANDIDATE"} · {offlineResult.passCount.toLocaleString()} hypotheses · {Math.round(offlineResult.frequency)} Hz · {Math.round(offlineResult.confidence * 100)}%</span>}
+              {offlineResult && <span className="optimizer-summary">
+                MULTIPASS {offlineResult.converged ? "LOCK" : "CANDIDATE"} · {offlineResult.passCount.toLocaleString()} hypotheses · {offlineResult.fundamentalHz && Math.abs(offlineResult.frequency - offlineResult.fundamentalHz) >= 55
+                  ? `F0 ${Math.round(offlineResult.fundamentalHz)} Hz · decode ${Math.round(offlineResult.frequency)} Hz H${Math.max(2, Math.round(offlineResult.frequency / offlineResult.fundamentalHz))}`
+                  : `${Math.round(offlineResult.frequency)} Hz`} · {Math.round(offlineResult.confidence * 100)}%
+              </span>}
               <span className="copy-quality"><Check size={13} /> Confidence shading is visible on uncertain copy</span>
             </div>
           </Panel>

@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "license": "MIT",
   "repository": "github:MichaelBernhardt/morsewave",
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,12 +16,14 @@
     "corpus:fetch": "node scripts/fetch-real-corpus.mjs",
     "corpus:evaluate": "tsx scripts/evaluate-wav.ts",
     "corpus:optimize": "tsx scripts/optimize-wav.ts",
+    "corpus:score": "tsx scripts/evaluate-corpus.ts",
     "check": "npm run test && npm run build",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
     "lucide-react": "^0.468.0",
+    "onnxruntime-web": "1.27.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

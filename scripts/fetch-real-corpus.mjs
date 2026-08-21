@@ -50,7 +50,10 @@ for (const sample of samples) {
       "-ss", String(sample.segment.start),
       "-t", String(sample.segment.duration),
       "-i", audioPath,
-      "-ac", "1", "-ar", "48000", segmentPath,
+      // Preserve independent receiver/diversity channels. Equal downmixing can
+      // cancel or bury keyed edges when the paths carry different fades/QRM;
+      // the optimizer deliberately evaluates the first two channels alone.
+      "-ar", "48000", segmentPath,
     ], { stdio: "inherit" });
     if (result.status !== 0) throw new Error(`ffmpeg failed for ${sample.id}`);
     console.log(`segment  ${basename(segmentPath)}`);
