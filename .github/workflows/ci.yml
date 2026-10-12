@@ -18,4 +18,20 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm audit --audit-level=high
       - run: npm run check
+
+  native:
+    name: Native macOS check
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo +stable check --locked --manifest-path src-tauri/Cargo.toml
